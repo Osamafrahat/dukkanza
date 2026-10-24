@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { useUserStore } from '../stores/userStore'
 import api from '../lib/api'
+import { buildPaymentInvoiceHtml } from '../lib/invoiceHtml'
 import { CreditCard, Users, Package, ShoppingCart, Clock, ArrowUpRight, ExternalLink, X, Mail, MessageCircle, Send, Loader2, CheckCircle, AlertTriangle, Trash2, Shield } from 'lucide-react'
 
 function getTierLabels(t) {
@@ -172,7 +173,7 @@ className={`h-2 rounded-full transition-all ${pct>90 ?'bg-danger': pct>70 ?'bg-w
 }
 
 export default function BillingPage() {
-  const { t } = useAppStore()
+  const { t, language } = useAppStore()
   const { currentUser } = useUserStore()
   const [billing, setBilling] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -203,6 +204,35 @@ export default function BillingPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  // View invoice: payment rows carry no invoice URL (the server maps only
+  // id/amount/currency/status/description/date), so the old <a href>
+  // rendered with no href and clicking it went nowhere. Generate the
+  // document client-side instead, using the repo's print-window pattern
+  // (BarcodePrinter): the print handler attaches from this side, so no
+  // <script> ever goes into the written markup.
+  const openInvoice = (p) => {
+    const w = window.open('', '_blank')
+    if (!w) return // popup blocked; nothing else we can do
+    w.document.write(buildPaymentInvoiceHtml({
+      payment: p,
+      tenantName: billing?.tenant?.name || '',
+      dir: language === 'ar' ? 'rtl' : 'ltr',
+      labels: {
+        title: t('billing.invoiceTitle') || 'Payment Invoice',
+        invoiceNumber: t('billing.invoiceNumber') || 'Invoice #',
+        date: t('billing.date') || 'Date',
+        description: t('billing.invoiceDescription') || 'Description',
+        status: t('billing.status') || 'Status',
+        amount: t('billing.amount') || 'Amount',
+        descriptionFallback: t('billing.invoiceFor') || 'Subscription payment',
+        footer: t('billing.invoiceFooter') || 'Thank you for choosing Dukkanza',
+        print: t('common.print') || 'Print',
+      },
+    }))
+    w.document.close()
+    w.document.getElementById('print-now')?.addEventListener('click', () => w.print())
   }
 
   // NOTE: all hooks must be declared before any early return. This role guard
@@ -473,7 +503,7 @@ className="p-1.5 text-danger hover:text-red-600 hover:bg-red-50 rounded-lg trans
                       </span>
                     </td>
 <td className="py-2.5 text-accent">
-                      <a href={p.invoiceUrl} target="_blank" rel="noreferrer" className="hover:underline">{t('billing.view') || 'View'}</a>
+                      <a href="#" onClick={(e) => { e.preventDefault(); openInvoice(p) }} className="hover:underline">{t('billing.view') || 'View'}</a>
                     </td>
                   </tr>
                 ))}
