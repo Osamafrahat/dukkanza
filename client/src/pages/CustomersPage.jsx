@@ -121,7 +121,7 @@ className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hov
           placeholder={t('customers.searchPlaceholder')}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-className="flex-1 px-4 py-2 rounded-lg border border-border bg-surface"
+className="flex-1 min-w-0 px-4 py-2 rounded-lg border border-border bg-surface"
         />
         <button
           type="submit"
@@ -510,7 +510,11 @@ function CustomerForm({ customer, onSave, onClose }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-<div className="bg-surface rounded-2xl w-full max-w-lg mx-4 shadow-2xl">
+          {/* max-h + scroll: the form is header + 5 fields + actions (~580px),
+              taller than a phone viewport once browser chrome is counted, and a
+              centered fixed modal with no cap clips its own Save button. Matches
+              the max-h-[90vh] convention the other modals already use. */}
+<div className="bg-surface rounded-2xl w-full max-w-lg mx-4 shadow-2xl max-h-[90vh] overflow-y-auto">
 <div className="flex items-center justify-between p-4 border-b border-border">
           <h2 className="text-xl font-semibold">
             {customer ? t('customers.editCustomer') : t('customers.addCustomer')}
@@ -542,6 +546,11 @@ className="w-full px-4 py-2 rounded-lg border border-border bg-surface"
 <label className="block text-sm font-medium text-foreground mb-1">
               {t('customers.phone')}
             </label>
+            {/* The min-w-0 on the phone input below is load-bearing: flex-1
+                alone cannot shrink an <input> under its intrinsic (~20ch)
+                min-content width, so on a phone the row kept the country
+                select's fixed 128px plus that intrinsic width and pushed the
+                input past the modal edge and off-screen. */}
             <div className="flex gap-2">
               <SearchableSelect
                 options={countryCodes.map(c => ({ value: c.code, label: `${c.flag} ${c.code}` }))}
@@ -558,7 +567,7 @@ className="w-full px-4 py-2 rounded-lg border border-border bg-surface"
                 placeholder="1xxxxxxxxx"
                 inputMode="numeric"
                 maxLength={10}
-className={`flex-1 px-4 py-2 rounded-lg border bg-surface ${
+className={`flex-1 min-w-0 px-4 py-2 rounded-lg border bg-surface ${
 phoneError ?'border-danger':'border-border'
                 }`}
               />
