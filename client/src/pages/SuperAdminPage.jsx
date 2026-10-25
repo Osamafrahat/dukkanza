@@ -1,10 +1,11 @@
 import ConfirmModal from '../components/ConfirmModal'
 import SearchableSelect from '../components/SearchableSelect'
+import SupportTab from '../components/superadmin/SupportTab'
 import { useState, useEffect, useCallback } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { useUserStore } from '../stores/userStore'
 import { superAdminApi } from '../lib/api'
-import { Search, Shield, Building2, Users, Package, TrendingUp, AlertTriangle, CheckCircle, Plus, Trash2, LogIn, DollarSign, Edit3, X, Save, Eye, Activity, BarChart3, CreditCard, Megaphone, Upload, Link2, Wallet, RefreshCw, Loader2 } from 'lucide-react'
+import { Search, Shield, Building2, Users, Package, TrendingUp, AlertTriangle, CheckCircle, Plus, Trash2, LogIn, DollarSign, Edit3, X, Save, Eye, Activity, BarChart3, CreditCard, Megaphone, Upload, Link2, Wallet, RefreshCw, Loader2, Mail } from 'lucide-react'
 
 const tierColors = {
 free:'bg-surface-tertiary text-foreground',
@@ -86,6 +87,7 @@ export default function SuperAdminPage() {
     { key: 'wallet', label: t('admin.tabWallet') || 'Wallet Transfers', icon: Wallet },
     { key: 'plans', label: t('admin.tabPlans') || 'Plans', icon: DollarSign },
     { key: 'banners', label: t('admin.tabBanners') || 'Banners', icon: Megaphone },
+    { key: 'support', label: t('admin.tabSupport') || 'Support', icon: Mail },
     { key: 'activity', label: t('admin.tabActivity') || 'Activity', icon: Activity },
   ]
 
@@ -143,6 +145,7 @@ toast.type==='error'?'bg-danger text-white':'bg-success text-white'
       {tab === 'wallet' && <WalletPaymentsTab t={t} showToast={showToast} />}
       {tab === 'plans' && <PlansTab t={t} showToast={showToast} />}
       {tab === 'banners' && <BannersTab t={t} showToast={showToast} />}
+      {tab === 'support' && <SupportTab t={t} showToast={showToast} />}
       {tab === 'activity' && <ActivityTab t={t} />}
     </div>
   )

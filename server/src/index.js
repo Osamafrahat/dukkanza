@@ -13,7 +13,7 @@ import { notifyOperator } from './services/telegramNotify.js'
 import { activityLogger } from './middleware/activityLogger.js'
 import { loginLimiter } from './middleware/loginLimiter.js'
 import { authRouter } from './routes/auth.js'
-import { authenticateToken, optionalAuthenticateToken, requireManager, setTenantContext } from './middleware/auth.js'
+import { authenticateToken, optionalAuthenticateToken, requireManager, requireSuperAdmin, setTenantContext } from './middleware/auth.js'
 
 import productsRouter from './routes/products.js'
 import emailInboundRouter from './routes/emailInbound.js'
@@ -57,6 +57,7 @@ import paymobRouter from './routes/paymob.js'
 import { walletUserRouter, walletAdminRouter } from './routes/walletPayments.js'
 import tenantRouter from './routes/tenant.js'
 import superAdminRouter from './routes/superAdmin.js'
+import supportMailRouter from './routes/supportMail.js'
 import commissionsRouter from './routes/commissions.js'
 import customerStatementsRouter from './routes/customerStatements.js'
 import cashShiftsRouter from './routes/cashShifts.js'
@@ -215,6 +216,11 @@ app.use('/api/billing/wallet', walletUserRouter)
 // Registered before the generic /api/super-admin mount so the wallet admin
 // routes resolve without passing through superAdmin.js first.
 app.use('/api/super-admin/wallet', walletAdminRouter)
+// Same reason as the wallet mount above: registered before the generic
+// /api/super-admin mount so the support-mailbox routes resolve without
+// passing through superAdmin.js first. Guards are declared here (rather than
+// as router.use) so the route-guard inventory test sees them at mount time.
+app.use('/api/super-admin/support', authenticateToken, requireSuperAdmin, supportMailRouter)
 app.use('/api/tenant', authenticateToken, setTenantContext, tenantRouter)
 app.use('/api/super-admin', authenticateToken, superAdminRouter)
 app.use('/api/commissions', authenticateToken, setTenantContext, activityLogger, commissionsRouter)

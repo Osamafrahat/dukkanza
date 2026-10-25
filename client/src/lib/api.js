@@ -416,6 +416,13 @@ export const superAdminApi = {
   getWalletPayment: (id) => api.get(`/super-admin/wallet/${id}`),
   confirmWalletPayment: (id) => api.post(`/super-admin/wallet/${id}/confirm`),
   rejectWalletPayment: (id, data) => api.post(`/super-admin/wallet/${id}/reject`, data),
+  // Support mailbox (support@dukkanza.com) — flat inbox over Resend's
+  // receiving API, plus the panel's own outbound mail in the sent folder.
+  getSupportMessages: (params) => api.get('/super-admin/support/messages', { params }),
+  getSupportMessage: (id, params) => api.get(`/super-admin/support/messages/${id}`, { params }),
+  getSupportAttachment: (id, attachmentId) =>
+    api.get(`/super-admin/support/messages/${id}/attachments/${attachmentId}`),
+  sendSupportMessage: (data) => api.post('/super-admin/support/send', data),
 }
 
 // Billing API
