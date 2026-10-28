@@ -229,41 +229,12 @@ AS $function$
 declare
   v_order record;
   v_item jsonb;
+  v_all jsonb;
   v_pid bigint;
   v_qty numeric;
+  v_delta numeric;
+  v_kind text;
   v_avail numeric;
-
-  -- One component write: branch path goes through adjust_product_stock,
-  -- legacy path (no branch) locks the product total row directly.
-  procedure apply_delta(p_pid bigint, p_delta numeric) is
-  begin
-    if p_branch_id is not null then
-      select quantity into v_avail
-        from public.product_stock
-       where tenant_id = p_tenant_id and product_id = p_pid
-         and branch_id = p_branch_id
-         for update;
-      if coalesce(v_avail, 0) + p_delta < 0 then
-        raise exception 'STOCK_INSUFFICIENT';
-      end if;
-      perform public.adjust_product_stock(p_tenant_id, p_pid, p_branch_id, p_delta);
-    else
-      select stock_quantity into v_avail
-        from public.products
-       where id = p_pid and tenant_id = p_tenant_id
-         for update;
-      if not found then
-        raise exception 'ORDER_INVALID';
-      end if;
-      if coalesce(v_avail, 0) + p_delta < 0 then
-        raise exception 'STOCK_INSUFFICIENT';
-      end if;
-      update public.products
-         set stock_quantity = stock_quantity + p_delta,
-             updated_at = now()
-       where id = p_pid and tenant_id = p_tenant_id;
-    end if;
-  end;
 begin
   select * into v_order
     from public.production_orders
@@ -278,14 +249,49 @@ begin
   if p_items is null or jsonb_array_length(p_items) = 0 then
     raise exception 'ORDER_EMPTY';
   end if;
+  if p_output is null or jsonb_array_length(p_output) = 0 then
+    raise exception 'ORDER_EMPTY';
+  end if;
   if p_quantity_produced is null or p_quantity_produced < 0 then
     raise exception 'ORDER_INVALID';
   end if;
 
-  -- Planned components (production_out)
+  -- Pack every stock movement into ONE ordered array: components and waste
+  -- go out first, finished output (and by-products) go in last. `kind`
+  -- drives the sign, the movement type and the freeze-row bookkeeping.
+  v_all := '[]'::jsonb;
   for v_item in select * from jsonb_array_elements(p_items) loop
-    v_pid := (v_item->>'product_id')::bigint;
-    v_qty := (v_item->>'quantity')::numeric;
+    v_all := v_all || jsonb_build_array(jsonb_build_object(
+      'pid', (v_item->>'product_id')::bigint,
+      'qty', (v_item->>'quantity')::numeric,
+      'uc', (v_item->>'unit_cost')::numeric,
+      'kind', 'component'));
+  end loop;
+  if p_scrap is not null and jsonb_array_length(p_scrap) > 0 then
+    for v_item in select * from jsonb_array_elements(p_scrap) loop
+      v_all := v_all || jsonb_build_array(jsonb_build_object(
+        'pid', (v_item->>'product_id')::bigint,
+        'qty', (v_item->>'quantity')::numeric,
+        'kind', 'scrap'));
+    end loop;
+  end if;
+  for v_item in select * from jsonb_array_elements(p_output) loop
+    v_all := v_all || jsonb_build_array(jsonb_build_object(
+      'pid', (v_item->>'product_id')::bigint,
+      'qty', (v_item->>'quantity')::numeric,
+      'kind', 'output'));
+  end loop;
+
+  -- Apply every delta under a row lock. Consumption is checked BEFORE the
+  -- run's own output lands, so a shortage can never be masked by what the
+  -- order produces. Branch writes go through adjust_product_stock (keeps
+  -- products.stock_quantity = sum(branch rows) invariant); the legacy
+  -- no-branch path locks the product total row directly. Any failure raises
+  -- here and rolls back stock + order state together.
+  for v_item in select * from jsonb_array_elements(v_all) loop
+    v_pid := (v_item->>'pid')::bigint;
+    v_qty := (v_item->>'qty')::numeric;
+    v_kind := v_item->>'kind';
     if v_pid is null or v_qty is null or v_qty <= 0 then
       raise exception 'ORDER_INVALID';
     end if;
@@ -293,73 +299,66 @@ begin
                    where id = v_pid and tenant_id = p_tenant_id) then
       raise exception 'ORDER_INVALID';
     end if;
+    if v_kind = 'output' then
+      v_delta := v_qty;
+    else
+      v_delta := -v_qty;
+    end if;
 
-    apply_delta(v_pid, -v_qty);
+    if p_branch_id is not null then
+      select quantity into v_avail
+        from public.product_stock
+       where tenant_id = p_tenant_id and product_id = v_pid
+         and branch_id = p_branch_id
+         for update;
+      if coalesce(v_avail, 0) + v_delta < 0 then
+        raise exception 'STOCK_INSUFFICIENT';
+      end if;
+      perform public.adjust_product_stock(p_tenant_id, v_pid, p_branch_id, v_delta);
+    else
+      select stock_quantity into v_avail
+        from public.products
+       where id = v_pid and tenant_id = p_tenant_id
+         for update;
+      if not found then
+        raise exception 'ORDER_INVALID';
+      end if;
+      if coalesce(v_avail, 0) + v_delta < 0 then
+        raise exception 'STOCK_INSUFFICIENT';
+      end if;
+      update public.products
+         set stock_quantity = stock_quantity + v_delta,
+             updated_at = now()
+       where id = v_pid and tenant_id = p_tenant_id;
+    end if;
 
     insert into public.stock_movements
       (tenant_id, product_id, type, quantity, reference_id, notes, created_by, branch_id)
     values
-      (p_tenant_id, v_pid, 'production_out', -v_qty, p_order_id,
-       coalesce(p_notes, 'Production ' || v_order.order_number) || ' - components',
+      (p_tenant_id, v_pid,
+       case v_kind when 'component' then 'production_out'
+                   when 'scrap' then 'production_scrap'
+                   else 'production_in' end,
+       v_delta,
+       p_order_id,
+       coalesce(p_notes, 'Production ' || v_order.order_number) ||
+         case v_kind when 'component' then ' - components'
+                     when 'scrap' then ' - waste'
+                     else ' - output' end,
        coalesce(p_user_id::text, 'system'), p_branch_id);
 
-    update public.production_order_items
-       set quantity_consumed = v_qty,
-           unit_cost = coalesce((v_item->>'unit_cost')::numeric, unit_cost)
-     where order_id = p_order_id and product_id = v_pid and is_byproduct = false;
-  end loop;
-
-  -- Yield loss (production_scrap)
-  if p_scrap is not null and jsonb_array_length(p_scrap) > 0 then
-    for v_item in select * from jsonb_array_elements(p_scrap) loop
-      v_pid := (v_item->>'product_id')::bigint;
-      v_qty := (v_item->>'quantity')::numeric;
-      if v_pid is null or v_qty is null or v_qty <= 0 then
-        raise exception 'ORDER_INVALID';
-      end if;
-      if not exists(select 1 from public.products
-                     where id = v_pid and tenant_id = p_tenant_id) then
-        raise exception 'ORDER_INVALID';
-      end if;
-
-      apply_delta(v_pid, -v_qty);
-
-      insert into public.stock_movements
-        (tenant_id, product_id, type, quantity, reference_id, notes, created_by, branch_id)
-      values
-        (p_tenant_id, v_pid, 'production_scrap', -v_qty, p_order_id,
-         coalesce(p_notes, 'Production ' || v_order.order_number) || ' - waste',
-         coalesce(p_user_id::text, 'system'), p_branch_id);
-
+    -- Freeze-row bookkeeping (output rows have nothing to write: by-product
+    -- quantity_planned was fixed at start)
+    if v_kind = 'component' then
+      update public.production_order_items
+         set quantity_consumed = v_qty,
+             unit_cost = coalesce((v_item->>'uc')::numeric, unit_cost)
+       where order_id = p_order_id and product_id = v_pid and is_byproduct = false;
+    elsif v_kind = 'scrap' then
       update public.production_order_items
          set scrap_quantity = v_qty
        where order_id = p_order_id and product_id = v_pid and is_byproduct = false;
-    end loop;
-  end if;
-
-  -- Finished output + by-products (production_in)
-  if p_output is null or jsonb_array_length(p_output) = 0 then
-    raise exception 'ORDER_EMPTY';
-  end if;
-  for v_item in select * from jsonb_array_elements(p_output) loop
-    v_pid := (v_item->>'product_id')::bigint;
-    v_qty := (v_item->>'quantity')::numeric;
-    if v_pid is null or v_qty is null or v_qty <= 0 then
-      raise exception 'ORDER_INVALID';
     end if;
-    if not exists(select 1 from public.products
-                   where id = v_pid and tenant_id = p_tenant_id) then
-      raise exception 'ORDER_INVALID';
-    end if;
-
-    apply_delta(v_pid, v_qty);
-
-    insert into public.stock_movements
-      (tenant_id, product_id, type, quantity, reference_id, notes, created_by, branch_id)
-    values
-      (p_tenant_id, v_pid, 'production_in', v_qty, p_order_id,
-       coalesce(p_notes, 'Production ' || v_order.order_number) || ' - output',
-       coalesce(p_user_id::text, 'system'), p_branch_id);
   end loop;
 
   -- Finalize the order in the same transaction
