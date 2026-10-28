@@ -32,6 +32,8 @@ export const PERMISSIONS = {
   HR_EDIT: 'hr_edit',
   SERVICES_VIEW: 'services_view',
   SERVICES_EDIT: 'services_edit',
+  MANUFACTURING_VIEW: 'manufacturing_view',
+  MANUFACTURING_EDIT: 'manufacturing_edit',
 }
 
 // Role definitions with default permissions
@@ -59,6 +61,7 @@ export const ROLES = {
       PERMISSIONS.EXPENSES_VIEW,
       PERMISSIONS.SERVICES_VIEW,
       PERMISSIONS.SERVICES_EDIT,
+      PERMISSIONS.MANUFACTURING_VIEW,
     ],
   },
   CASHIER: {
@@ -85,6 +88,8 @@ export const ROLES = {
       PERMISSIONS.SUPPLIERS_VIEW,
       PERMISSIONS.SUPPLIERS_EDIT,
       PERMISSIONS.REPORTS_VIEW,
+      PERMISSIONS.MANUFACTURING_VIEW,
+      PERMISSIONS.MANUFACTURING_EDIT,
     ],
   },
   ACCOUNTANT: {
@@ -101,6 +106,7 @@ export const ROLES = {
       PERMISSIONS.EXPENSES_EDIT,
       PERMISSIONS.SUPPLIERS_VIEW,
       PERMISSIONS.CUSTOMERS_VIEW,
+      PERMISSIONS.MANUFACTURING_VIEW,
     ],
   },
   HR_MANAGER: {
@@ -330,6 +336,8 @@ export const useUserStore = create(
           '/services': PERMISSIONS.SERVICES_VIEW,
           '/service-plans': PERMISSIONS.SERVICES_VIEW,
           '/subscriptions': PERMISSIONS.SERVICES_VIEW,
+          '/manufacturing': PERMISSIONS.MANUFACTURING_VIEW,
+          '/manufacturing/boms': PERMISSIONS.MANUFACTURING_VIEW,
         }
 
         const requiredPermission = routePermissions[route]

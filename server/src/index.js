@@ -64,6 +64,10 @@ import cashShiftsRouter from './routes/cashShifts.js'
 import creditSalesRouter from './routes/creditSales.js'
 import productBatchesRouter from './routes/productBatches.js'
 import purchaseOrdersRouter from './routes/purchaseOrders.js'
+import bomsRouter from './routes/boms.js'
+import workCentersRouter from './routes/workCenters.js'
+import productionOrdersRouter from './routes/productionOrders.js'
+import manufacturingReportsRouter from './routes/manufacturingReports.js'
 import { initSentry, flushSentry } from './services/sentry.js'
 
 const app = express()
@@ -229,6 +233,10 @@ app.use('/api/cash-shifts', authenticateToken, setTenantContext, activityLogger,
 app.use('/api/credit-sales', authenticateToken, setTenantContext, activityLogger, creditSalesRouter)
 app.use('/api/product-batches', authenticateToken, setTenantContext, activityLogger, productBatchesRouter)
 app.use('/api/purchase-orders', authenticateToken, setTenantContext, activityLogger, purchaseOrdersRouter)
+app.use('/api/manufacturing/boms', authenticateToken, setTenantContext, activityLogger, bomsRouter)
+app.use('/api/manufacturing/work-centers', authenticateToken, setTenantContext, activityLogger, workCentersRouter)
+app.use('/api/manufacturing/orders', authenticateToken, setTenantContext, activityLogger, productionOrdersRouter)
+app.use('/api/manufacturing/reports', authenticateToken, setTenantContext, activityLogger, manufacturingReportsRouter)
 
 // Public banners endpoint (no auth required — shown on dashboard)
 app.get('/api/banners', async (req, res) => {

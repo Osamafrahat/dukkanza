@@ -753,6 +753,61 @@ export async function postStockAdjustJournal(movement, product, tenantId) {
   }, tenantId)
 }
 
+// Auto-post production completion to journal (ADDITIVE export — no
+// existing symbol or call path is modified).
+//
+// Flat-inventory model (house convention, mirrors postStockAdjustJournal):
+//   Dr 1050 Inventory            total_cost     (finished goods value in)
+//   Cr 1050 Inventory            component_cost (raw materials value out)
+//   Cr 5010 COGS                 operations_cost (conversion value added)
+// Debits always equal credits by construction (total = component +
+// operations); if an account the entry needs is missing we return null and
+// skip, exactly like the stock posters do.
+export async function postProductionJournal(order, product, tenantId) {
+  const component = Number(order.component_cost) || 0
+  const operations = Number(order.operations_cost) || 0
+  const total = Number(order.total_cost) || 0
+  if (total <= 0) return null
+
+  const inventoryAccount = await findAccountByCode('1050', tenantId)
+  if (!inventoryAccount) return null
+
+  const lines = [{
+    accountId: inventoryAccount.id,
+    debit: total,
+    credit: 0,
+    description: `Production in: ${product.name || ''} x${order.quantity_produced}`,
+  }]
+  if (component > 0) {
+    lines.push({
+      accountId: inventoryAccount.id,
+      debit: 0,
+      credit: component,
+      description: `Production components - ${order.order_number}`,
+    })
+  }
+  if (operations > 0) {
+    const cogsAccount = await findAccountByCode('5010', tenantId)
+    if (!cogsAccount) return null
+    lines.push({
+      accountId: cogsAccount.id,
+      debit: 0,
+      credit: operations,
+      description: `Production conversion - ${order.order_number}`,
+    })
+  }
+
+  return createJournalEntry({
+    date: (order.completed_at || new Date().toISOString()).split('T')[0],
+    description: `Production ${order.order_number} - ${product.name || ''}`,
+    reference: order.order_number,
+    sourceType: 'production',
+    sourceId: order.id,
+    lines,
+    createdBy: null,
+  }, tenantId)
+}
+
 // Reverse a journal entry (creates opposite entry)
 export async function reverseJournalEntry(entryId, reason, userId, tenantId) {
   const { data: originalEntry } = await supabase

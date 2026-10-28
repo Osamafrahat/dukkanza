@@ -490,6 +490,50 @@ export const purchaseOrdersApi = {
   getStats: () => api.get('/purchase-orders/stats'),
 }
 
+// Manufacturing (MRP) API — BOMs, work centers, production orders, reports
+export const manufacturingApi = {
+  // Bills of Materials
+  boms: {
+    getAll: (params) => api.get('/manufacturing/boms', { params }),
+    getById: (id) => api.get(`/manufacturing/boms/${id}`),
+    create: (data) => api.post('/manufacturing/boms', data),
+    update: (id, data) => api.put(`/manufacturing/boms/${id}`, data),
+    delete: (id) => api.delete(`/manufacturing/boms/${id}`),
+  },
+  // Work centers (machines / stations)
+  workCenters: {
+    getAll: () => api.get('/manufacturing/work-centers'),
+    create: (data) => api.post('/manufacturing/work-centers', data),
+    update: (id, data) => api.put(`/manufacturing/work-centers/${id}`, data),
+    delete: (id) => api.delete(`/manufacturing/work-centers/${id}`),
+  },
+  // Production orders (MO lifecycle)
+  orders: {
+    getAll: (params) => api.get('/manufacturing/orders', { params }),
+    getById: (id) => api.get(`/manufacturing/orders/${id}`),
+    getStats: () => api.get('/manufacturing/orders/stats'),
+    create: (data) => api.post('/manufacturing/orders', data),
+    update: (id, data) => api.put(`/manufacturing/orders/${id}`, data),
+    confirm: (id) => api.post(`/manufacturing/orders/${id}/confirm`),
+    start: (id) => api.post(`/manufacturing/orders/${id}/start`),
+    pause: (id) => api.post(`/manufacturing/orders/${id}/pause`),
+    resume: (id) => api.post(`/manufacturing/orders/${id}/resume`),
+    cancel: (id) => api.post(`/manufacturing/orders/${id}/cancel`),
+    complete: (id, data) => api.post(`/manufacturing/orders/${id}/complete`, data),
+    startWorkOrder: (id, woId) => api.post(`/manufacturing/orders/${id}/work-orders/${woId}/start`),
+    completeWorkOrder: (id, woId) => api.post(`/manufacturing/orders/${id}/work-orders/${woId}/complete`),
+    skipWorkOrder: (id, woId) => api.post(`/manufacturing/orders/${id}/work-orders/${woId}/skip`),
+    addQuality: (id, data) => api.post(`/manufacturing/orders/${id}/quality`, data),
+    updateQuality: (id, qcId, data) => api.put(`/manufacturing/orders/${id}/quality/${qcId}`, data),
+    deleteQuality: (id, qcId) => api.delete(`/manufacturing/orders/${id}/quality/${qcId}`),
+  },
+  // Reports (costs, yield)
+  reports: {
+    getCosts: (params) => api.get('/manufacturing/reports/costs', { params }),
+    getYield: (params) => api.get('/manufacturing/reports/yield', { params }),
+  },
+}
+
 // Commissions API
 export const commissionsApi = {
   getAll: (params) => api.get('/commissions', { params }),

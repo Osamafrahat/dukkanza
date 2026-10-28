@@ -25,10 +25,12 @@ import {
   CreditCard,
   Crown,
   DollarSign,
+  Factory,
   FileText,
   Globe,
   HardDrive,
   LayoutDashboard,
+  Layers,
   LogOut,
   Menu,
   Moon,
@@ -209,6 +211,19 @@ export default function Layout({ children }) {
   }
   if (inventoryItems.length > 0) {
     groups.push({ key: 'inventory', label: t('nav.groupInventory') || 'Inventory', items: inventoryItems })
+  }
+
+  // -- Manufacturing (MRP) -- tenant-scoped like purchase orders, so the
+  // platform SUPER_ADMIN (no tenant) is excluded from both entries.
+  const manufacturingItems = []
+  if (canAccess('/manufacturing') && currentUser?.role !== 'SUPER_ADMIN') {
+    manufacturingItems.push({ name: t('nav.manufacturingOrders') || 'Production Orders', href: '/manufacturing', icon: Factory })
+  }
+  if (canAccess('/manufacturing/boms') && currentUser?.role !== 'SUPER_ADMIN') {
+    manufacturingItems.push({ name: t('nav.billsOfMaterials') || 'Bills of Materials', href: '/manufacturing/boms', icon: Layers })
+  }
+  if (manufacturingItems.length > 0) {
+    groups.push({ key: 'manufacturing', label: t('nav.groupManufacturing') || 'Manufacturing', items: manufacturingItems })
   }
 
   // -- Accounting --
