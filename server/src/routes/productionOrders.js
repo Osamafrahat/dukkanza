@@ -146,7 +146,10 @@ router.get('/', async (req, res, next) => {
 
     let query = supabase
       .from('production_orders')
-      .select(ORDER_SELECT)
+      // count must be requested up front: supabase-js >= 2.100 dropped the
+      // chained .count() builder, so a late `await query.count('exact')`
+      // throws a TypeError and 500s the route.
+      .select(ORDER_SELECT, { count: 'exact' })
       .eq('tenant_id', tid)
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1)
@@ -163,7 +166,7 @@ router.get('/', async (req, res, next) => {
       query = query.eq('product_id', pid)
     }
 
-    const { data, error, count } = await query.count('exact')
+    const { data, error, count } = await query
     if (error) throw error
     res.json({ orders: data || [], total: count ?? (data || []).length })
   } catch (err) {

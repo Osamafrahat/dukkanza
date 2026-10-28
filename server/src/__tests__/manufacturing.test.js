@@ -51,7 +51,8 @@ function makeFrom(table) {
   })
   chain.single = jest.fn(() => Promise.resolve(nextResult(table)))
   chain.maybeSingle = jest.fn(() => Promise.resolve(nextResult(table)))
-  chain.count = jest.fn(() => chain)
+  // NOTE: no chained `.count()` — supabase-js removed it (count is a select
+  // option). Faking it here once masked a real 500 in the orders list route.
   chain.then = (resolve, reject) => Promise.resolve(nextResult(table)).then(resolve, reject)
   return chain
 }
@@ -278,6 +279,17 @@ function primeOrder({ status = 'in_progress', items = [frozenItem()], workOrders
 }
 
 describe('productionOrders routes', () => {
+  it('lists orders with a total (regression: count comes from select options)', async () => {
+    // The list once did `await query.count('exact')` — a chained builder that
+    // supabase-js removed — so every real list call 500'd on a TypeError.
+    setDefault('production_orders', { data: [inProgressOrder()], error: null, count: 1 })
+
+    const res = await request(app).get('/api/manufacturing/orders')
+    expect(res.status).toBe(200)
+    expect(res.body.total).toBe(1)
+    expect(res.body.orders).toHaveLength(1)
+  })
+
   it('validates the status filter', async () => {
     const res = await request(app).get('/api/manufacturing/orders?status=nope')
     expect(res.status).toBe(400)
