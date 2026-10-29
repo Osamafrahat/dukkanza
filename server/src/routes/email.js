@@ -2,7 +2,7 @@ import { Router } from 'express'
 import supabase from '../db/supabase.js'
 import { authenticateToken, requirePermission } from '../middleware/auth.js'
 import { sendPromotionEmail, sendPurchaseOrderEmail } from '../services/emailService.js'
-import { sendPromotionWhatsApp, sendCustomWhatsApp } from '../services/whatsappService.js'
+import { sendPromotionWhatsApp, sendPurchaseOrderWhatsApp } from '../services/whatsappService.js'
 
 const router = Router()
 
@@ -125,35 +125,47 @@ router.post('/promotion', authenticateToken, requirePermission('promotions_edit'
 })
 
 // Compose the outbound purchase-order message (order details + store
-// name/location/phone). Shared by the email and WhatsApp channels so the
-// supplier always receives identical content however they are contacted.
+// name/location/phone) as plain text. This feeds the WhatsApp channel and the
+// modal's "Copy message" button — both read the same string. Email has its own
+// HTML template in emailService.js (sendPurchaseOrderEmail).
+//
+// Bilingual AR-first + EN, the same stacking the email template uses: the
+// server stores no per-contact language, so both ship together. Section
+// headers and totals get a full line per language; line items stay one row
+// with paired labels, otherwise a 20-line order becomes unreadable on a
+// phone. WhatsApp renders *text* as bold, so emphasis uses asterisks.
 function buildPurchaseOrderMessage(po, items, store) {
   const lines = []
-  lines.push(`Purchase Order: ${po.order_number}`)
-  if (po.expected_date) {
-    lines.push(`Expected date: ${new Date(po.expected_date).toLocaleDateString('ar-EG')}`)
-  }
+  lines.push(`*أمر شراء ${po.order_number}*`)
+  lines.push(`*Purchase Order ${po.order_number}*`)
   lines.push('')
-  lines.push('Items:')
+  if (po.expected_date) {
+    const d = new Date(po.expected_date)
+    lines.push(`التاريخ المتوقع: ${d.toLocaleDateString('ar-EG')}`)
+    lines.push(`Expected date: ${d.toLocaleDateString('en-GB')}`)
+    lines.push('')
+  }
+  lines.push('*البنود / Items:*')
   for (const item of items) {
     const lineTotal = item.total != null
       ? parseFloat(item.total)
       : parseFloat(item.quantity) * parseFloat(item.unit_price)
     lines.push(
-      `- ${item.product_name} | qty: ${item.quantity} | unit: ${parseFloat(item.unit_price)} | total: ${lineTotal}`
+      `- ${item.product_name} | الكمية/Qty: ${item.quantity} | الوحدة/Unit: ${parseFloat(item.unit_price)} | الإجمالي/Total: ${lineTotal}`
     )
   }
   lines.push('')
-  lines.push(`Order total: ${parseFloat(po.total)}`)
+  lines.push(`*إجمالي الطلب: ${parseFloat(po.total)}*`)
+  lines.push(`*Order total: ${parseFloat(po.total)}*`)
   if (po.notes) {
     lines.push('')
-    lines.push(`Notes: ${po.notes}`)
+    lines.push(`ملاحظات/Notes: ${po.notes}`)
   }
   lines.push('')
-  lines.push('Store information:')
-  lines.push(`Store: ${store.name}`)
-  if (store.address) lines.push(`Location: ${store.address}`)
-  if (store.phone) lines.push(`Phone: ${store.phone}`)
+  lines.push('*معلومات المتجر / Store information:*')
+  lines.push(`المتجر/Store: ${store.name}`)
+  if (store.address) lines.push(`الموقع/Location: ${store.address}`)
+  if (store.phone) lines.push(`الهاتف/Phone: ${store.phone}`)
   return lines.join('\n')
 }
 
@@ -202,7 +214,6 @@ router.post('/purchase-order', authenticateToken, async (req, res) => {
 
     const supplier = po.suppliers || {}
     const message = buildPurchaseOrderMessage(po, items || [], store)
-    const subject = `Purchase Order ${po.order_number} — ${store.name}`
     const emailConfigured = !!(process.env.RESEND_API_KEY || (process.env.SMTP_USER && process.env.SMTP_PASS))
 
     const results = { email: [], whatsapp: [] }
@@ -233,11 +244,9 @@ router.post('/purchase-order', authenticateToken, async (req, res) => {
       if (!supplier.phone) {
         results.whatsapp = [{ success: false, skipped: true, reason: 'no_supplier_phone' }]
       } else {
-        results.whatsapp = await sendCustomWhatsApp({
+        results.whatsapp = await sendPurchaseOrderWhatsApp({
           recipients: [{ phone: supplier.phone, name: supplier.contact_person || supplier.name }],
-          title: subject,
           message,
-          storeName: store.name,
         })
       }
     }

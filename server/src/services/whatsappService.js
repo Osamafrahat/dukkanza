@@ -44,6 +44,34 @@ export async function sendPromotionWhatsApp({ recipients, promotion, storeName }
   return results
 }
 
+// Send a purchase order to its supplier. The message arrives already complete
+// (bilingual header, lines, totals, store block) because the modal's "Copy
+// message" button copies it verbatim — so this must NOT wrap it in the
+// generic title/footer that sendCustomWhatsApp adds, or WhatsApp would show
+// the header and store name twice.
+export async function sendPurchaseOrderWhatsApp({ recipients, message }) {
+  const results = []
+  for (const recipient of recipients) {
+    if (!recipient.phone) {
+      results.push({ phone: 'N/A', success: false, error: 'No phone number' })
+      continue
+    }
+
+    const link = generateWhatsAppLink(recipient.phone, message)
+    results.push({
+      phone: recipient.phone,
+      name: recipient.name,
+      success: true,
+      link,
+      message
+    })
+
+    console.log(`WhatsApp link for ${recipient.name}: ${link}`)
+  }
+
+  return results
+}
+
 // Send custom message via WhatsApp (generates links)
 export async function sendCustomWhatsApp({ recipients, title, message, storeName }) {
   const fullMessage = `📢 *${title}*\n\n${message}\n\n— ${storeName}`
