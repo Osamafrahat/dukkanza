@@ -107,13 +107,26 @@ router.get('/sales', async (req, res, next) => {
       dailySales.unshift({ date: dateStr, sales: dayTotal })
     }
 
+    // Hourly distribution across the range — which parts of the day are
+    // busiest. Computed from the orders already fetched, so no extra query.
+    const hourlySales = Array.from({ length: 24 }, (_, hour) => ({ hour, sales: 0, orders: 0 }))
+    safeOrders.forEach(o => {
+      if (!o.created_at) return
+      const hour = new Date(o.created_at).getHours()
+      if (hour >= 0 && hour < 24) {
+        hourlySales[hour].sales += parseFloat(o.total) || 0
+        hourlySales[hour].orders += 1
+      }
+    })
+
     res.json({
       totalSales,
       totalOrders,
       avgOrderValue,
       itemsSold,
       topProducts,
-      dailySales
+      dailySales,
+      hourlySales
     })
   } catch (err) {
     next(err)

@@ -7,6 +7,9 @@ import { productsApi, ordersApi, reportsApi, suppliersApi, promotionsApi, expens
 import { formatCurrency } from '../lib/utils'
 import ClockWidget from '../components/attendance/ClockWidget'
 import BannerCarousel from '../components/BannerCarousel'
+import KpiCard from '../components/dashboard/KpiCard'
+import SalesAnalytics from '../components/dashboard/SalesAnalytics'
+import useSalesAnalytics from '../components/dashboard/useSalesAnalytics'
 import {
   // Calendar and Star were once referenced below (HR Manager dashboard)
   // without being imported, which threw a ReferenceError and blanked the
@@ -54,6 +57,10 @@ export default function DashboardPage() {
   })
   const [loading, setLoading] = useState(true)
   const [banners, setBanners] = useState([])
+
+  // 30-day window behind the analytics panel AND the Manager sales delta.
+  // Both this hook and <SalesAnalytics /> share one cached request.
+  const { analytics } = useSalesAnalytics()
 
   useEffect(() => {
     fetchDashboardData()
@@ -194,12 +201,25 @@ export default function DashboardPage() {
       {/* Banners */}
       <BannerCarousel banners={banners} />
 
-      {/* Welcome Header */}
-<div className="bg-gradient-to-r from-primary-600 to-primary-700 rounded-2xl p-4 sm:p-6 text-white">
-        <h1 className="text-xl sm:text-2xl font-bold break-words">{getGreeting()}, {currentUser?.fullName}!</h1>
-<p className="text-accent mt-1 truncate">
-          {settings.storeName || t('layout.defaultStoreName')} — {ROLES_LABELS[role] || role}
-        </p>
+      {/* Welcome Header — a tinted surface with an accent glow rather than a
+          flat colour bar, so it reads as depth instead of a banner. */}
+      <div className="relative overflow-hidden rounded-2xl border border-border bg-surface p-5 shadow-sm sm:p-6">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 bg-gradient-to-br from-accent/12 via-transparent to-success/10"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-12 -top-20 h-56 w-56 rounded-full bg-accent opacity-20 blur-3xl"
+        />
+        <div className="relative">
+          <h1 className="break-words text-xl font-bold text-foreground sm:text-2xl">
+            {getGreeting()}, {currentUser?.fullName}!
+          </h1>
+          <p className="mt-1 truncate text-sm text-muted">
+            {settings.storeName || t('layout.defaultStoreName')} — {ROLES_LABELS[role] || role}
+          </p>
+        </div>
       </div>
 
       {/* Clock In/Out for employees */}
@@ -209,7 +229,19 @@ export default function DashboardPage() {
       {isManager && (
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard icon={DollarSign} label={t('dashboard.todaysSales')} value={formatCurrency(stats.todaySales)} color="green" href="/reports" />
+            {/* Headline metric: animated currency, a 7-day sparkline and the
+                week-over-week delta from the analytics window. */}
+            <KpiCard
+              icon={DollarSign}
+              label={t('dashboard.todaysSales')}
+              value={stats.todaySales}
+              format={(n) => formatCurrency(n)}
+              delta={analytics?.delta ?? null}
+              deltaLabel={analytics ? t('dashboard.vsLastWeek') : undefined}
+              spark={analytics?.spark || []}
+              tone="green"
+              href="/reports"
+            />
             <StatCard icon={ShoppingBag} label={t('dashboard.todaysOrders')} value={stats.todayOrders} color="blue" href="/reports" />
             <StatCard icon={Package} label={t('dashboard.totalProducts')} value={stats.totalProducts} color="purple" href="/inventory" />
             <StatCard icon={AlertTriangle} label={t('dashboard.lowStockItems')} value={stats.lowStockCount} color={stats.lowStockCount > 0 ? 'red' : 'gray'} href="/inventory" />
@@ -219,6 +251,7 @@ export default function DashboardPage() {
             <StatCard icon={Tag} label={t('dashboard.activePromotions')} value={stats.activePromotions} color="pink" href="/promotions" />
             <StatCard icon={Users} label={t('dashboard.teamMembers')} value={t('dashboard.viewAll')} color="indigo" href="/users" />
           </div>
+          <SalesAnalytics />
           <QuickActions showAll />
           <ManagerDashboard stats={stats} t={t} />
         </>
@@ -233,6 +266,7 @@ export default function DashboardPage() {
             <StatCard icon={Tag} label={t('dashboard.activePromotions')} value={stats.activePromotions} color="pink" href="/promotions" />
             <StatCard icon={Package} label={t('dashboard.totalProducts')} value={stats.totalProducts} color="purple" href="/inventory" />
           </div>
+          <SalesAnalytics />
           <QuickActions showPOS showPromotions showCustomers />
           <SalesDashboard stats={stats} t={t} />
         </>
@@ -245,6 +279,7 @@ export default function DashboardPage() {
             <StatCard icon={DollarSign} label={t('dashboard.todaysSales')} value={formatCurrency(stats.todaySales)} color="green" href="/reports" />
             <StatCard icon={ShoppingBag} label={t('dashboard.todaysOrders')} value={stats.todayOrders} color="blue" href="/reports" />
           </div>
+          <SalesAnalytics />
           <QuickActions showPOS={false} />
           <CashierDashboard stats={stats} t={t} />
         </>
@@ -258,6 +293,7 @@ export default function DashboardPage() {
             <StatCard icon={AlertTriangle} label={t('dashboard.lowStockItems')} value={stats.lowStockCount} color={stats.lowStockCount > 0 ? 'red' : 'gray'} href="/inventory" />
             <StatCard icon={Truck} label={t('dashboard.totalSuppliers')} value={stats.totalSuppliers} color="amber" href="/suppliers" />
           </div>
+          <SalesAnalytics />
           <QuickActions showInventory showSuppliers />
           <InventoryDashboard stats={stats} t={t} />
         </>
@@ -271,6 +307,7 @@ export default function DashboardPage() {
             <StatCard icon={Calendar} label={t('dashboard.attendance')} value={t('dashboard.viewAll')} color="blue" href="/attendance" />
             <StatCard icon={Star} label={t('dashboard.performance')} value={t('dashboard.viewAll')} color="purple" href="/performance" />
           </div>
+          <SalesAnalytics />
           <QuickActions showHR />
         </>
       )}
@@ -284,6 +321,7 @@ export default function DashboardPage() {
             <StatCard icon={TrendingUp} label={t('dashboard.netCashFlow')} value={formatCurrency(stats.netCashFlow)} color={stats.netCashFlow >= 0 ? 'green' : 'red'} href="/accounting/payments" />
             <StatCard icon={DollarSign} label={t('dashboard.totalExpenses')} value={formatCurrency(stats.totalExpenses)} color="amber" href="/expenses" />
           </div>
+          <SalesAnalytics />
           <AccountantQuickActions />
           <AccountantDashboard stats={stats} t={t} />
         </>
@@ -466,33 +504,22 @@ function AccountantDashboard({ stats, t }) {
   )
 }
 
+// Adapter over the modern KpiCard. The role layouts pass `value` as either a
+// raw number (which animates) or a pre-formatted string such as a currency
+// or a translation (rendered verbatim — there is nothing to interpolate).
+// `color` keeps the exact icon-tile palette the old card used.
 function StatCard({ icon: Icon, label, value, color, href }) {
-  const colorClasses = {
-    green: 'bg-success-soft text-success',
-    blue: 'bg-accent-soft text-accent-soft-foreground',
-purple:'bg-purple-100 dark:bg-purple-900/30 text-purple-600',
-    red: 'bg-danger-soft text-danger',
-    amber: 'bg-warning-soft text-warning',
-    pink: 'bg-pink-100 dark:bg-pink-900/30 text-pink-600',
-indigo:'bg-accent-soft text-accent-soft-foreground',
-    gray: 'bg-surface-tertiary text-muted',
-  }
+  const isNumeric = typeof value === 'number'
 
   return (
-    <Link
-      to={href}
-      className="bg-surface rounded-xl border border-border shadow-sm p-4 hover:shadow-md transition-shadow"
-    >
-      <div className="flex items-center gap-3 min-w-0">
-        <div className={`p-2 rounded-lg ${colorClasses[color]} shrink-0`}>
-          <Icon className="w-5 h-5" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-xs sm:text-sm text-muted truncate">{label}</p>
-          <p className="text-lg sm:text-xl font-bold truncate">{value}</p>
-        </div>
-      </div>
-    </Link>
+    <KpiCard
+      label={label}
+      icon={Icon}
+      href={href}
+      tone={color || 'accent'}
+      value={isNumeric ? value : 0}
+      displayValue={isNumeric ? undefined : String(value ?? '')}
+    />
   )
 }
 
