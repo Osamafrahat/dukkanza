@@ -16,6 +16,9 @@ import express from 'express'
 
 const queues = new Map()
 const defaults = new Map()
+// Records every supabase `from()` so a test can assert the guard fired
+// BEFORE any query was issued, not merely that the response looked empty.
+const fromSpy = jest.fn((table) => makeFrom(table))
 
 function setDefault(table, result) {
   defaults.set(table, result)
@@ -39,7 +42,7 @@ function makeFrom(table) {
 }
 
 jest.unstable_mockModule('../db/supabase.js', () => ({
-  default: { from: (table) => makeFrom(table) },
+  default: { from: fromSpy },
   supabaseStorage: { from: (table) => makeFrom(table) },
   withTimeout: (p) => p,
 }))
@@ -49,8 +52,10 @@ const { default: reportsRouter } = await import('../routes/reports.js')
 const app = express()
 app.use(express.json())
 // reports.js reads req.user/req.branchId set by the mount in index.js.
+// Swappable so a test can speak as a tenant-less platform admin.
+let currentUser = { id: 1, tenantId: 1, role: 'MANAGER' }
 app.use('/api/reports', (req, res, next) => {
-  req.user = { id: 1, tenantId: 1, role: 'MANAGER' }
+  req.user = currentUser
   req.branchId = null
   next()
 }, reportsRouter)
@@ -81,6 +86,7 @@ beforeEach(() => {
   queues.clear()
   defaults.clear()
   jest.clearAllMocks()
+  currentUser = { id: 1, tenantId: 1, role: 'MANAGER' }
   setDefault('orders', { data: ORDERS, error: null })
   setDefault('order_items', { data: ORDER_ITEMS, error: null })
 })
@@ -147,5 +153,76 @@ describe('GET /reports/sales — hourly distribution', () => {
     expect(res.status).toBe(200)
     expect(res.body.hourlySales).toHaveLength(24)
     expect(res.body.hourlySales.every((h) => h.sales === 0 && h.orders === 0)).toBe(true)
+  })
+})
+
+describe('tenant-less caller (platform SUPER_ADMIN)', () => {
+  // backup.js documents tenant_id === null as this role's designed state and
+  // auth deliberately lets such a token through. supabase-js renders
+  // `.eq('tenant_id', null)` as `tenant_id=eq.null`, which PostgREST parses
+  // as a comparison against the TEXT 'null' — Postgres rejects that for a
+  // bigint column ("invalid input syntax for type bigint: \"null\""), and the
+  // route's `throw` made it a 500. This is the live Sentry issue.
+  beforeEach(() => {
+    currentUser = { id: 99, tenantId: null, role: 'SUPER_ADMIN' }
+  })
+
+  it('answers /sales with an empty report instead of failing', async () => {
+    const res = await getSales()
+
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({
+      totalSales: 0,
+      totalOrders: 0,
+      avgOrderValue: 0,
+      itemsSold: 0,
+      topProducts: [],
+      dailySales: [],
+      hourlySales: [],
+    })
+  })
+
+  it('bails before touching the database', async () => {
+    await getSales()
+
+    // Guards on the first line of the handler: no tenant filter is ever
+    // built, so the malformed `eq.null` query cannot be issued at all.
+    expect(fromSpy).not.toHaveBeenCalled()
+  })
+
+  it('returns matching empty shapes for the sibling reports', async () => {
+    const stock = await request(app).get('/api/reports/stock')
+    expect(stock.status).toBe(200)
+    expect(stock.body).toMatchObject({
+      totalProducts: 0,
+      lowStockCount: 0,
+      lowStockProducts: [],
+      categoryBreakdown: [],
+      topByValue: [],
+    })
+
+    const pl = await request(app).get('/api/reports/profit-loss')
+    expect(pl.status).toBe(200)
+    expect(pl.body).toMatchObject({ totalRevenue: 0, grossProfit: 0, margin: 0 })
+
+    const expenses = await request(app).get('/api/reports/expenses')
+    expect(expenses.status).toBe(200)
+    expect(expenses.body).toMatchObject({ totalExpenses: 0, dailyExpenses: [] })
+
+    const dead = await request(app).get('/api/reports/dead-stock')
+    expect(dead.status).toBe(200)
+    expect(dead.body).toMatchObject({ items: [], total_items: 0, total_value: 0 })
+
+    expect(fromSpy).not.toHaveBeenCalled()
+  })
+
+  it('still serves tenant-scoped callers normally', async () => {
+    currentUser = { id: 1, tenantId: 1, role: 'MANAGER' }
+
+    const res = await getSales()
+
+    expect(res.status).toBe(200)
+    expect(res.body.totalOrders).toBe(4)
+    expect(fromSpy).toHaveBeenCalled()
   })
 })

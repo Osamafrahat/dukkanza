@@ -10,8 +10,35 @@ function branchScoped(query, branchId) {
   return branchId ? query.eq('branch_id', branchId) : query
 }
 
+// Every report below scopes with `.eq('tenant_id', req.user.tenantId)`.
+// A platform SUPER_ADMIN is deliberately tenant-less (tenant_id === null —
+// backup.js keys off exactly that, and auth lets such a token through).
+// supabase-js serialises `.eq(col, null)` as `col=eq.null`, which PostgREST
+// parses as a comparison against the TEXT 'null'; Postgres then rejects that
+// for a bigint column — "invalid input syntax for type bigint: \"null\"" —
+// and the routes' `throw` turns it into a 500. Seen live on GET /sales.
+//
+// Such a caller has no store to report on, so answer with an empty report of
+// the right shape rather than an error (the clients read these fields).
+// Returns true once the response has been sent.
+function replyIfTenantless(req, res, payload) {
+  if (req.user?.tenantId) return false
+  res.json(payload)
+  return true
+}
+
 // Get sales report
 router.get('/sales', async (req, res, next) => {
+  if (replyIfTenantless(req, res, {
+    totalSales: 0,
+    totalOrders: 0,
+    avgOrderValue: 0,
+    itemsSold: 0,
+    topProducts: [],
+    dailySales: [],
+    hourlySales: [],
+  })) return
+
   try {
     const { range = 'week' } = req.query
 
@@ -135,6 +162,17 @@ router.get('/sales', async (req, res, next) => {
 
 // Get stock report
 router.get('/stock', async (req, res, next) => {
+  if (replyIfTenantless(req, res, {
+    totalProducts: 0,
+    lowStockCount: 0,
+    lowStockProducts: [],
+    totalValue: 0,
+    totalCost: 0,
+    potentialProfit: 0,
+    categoryBreakdown: [],
+    topByValue: [],
+  })) return
+
   try {
     const tid = req.user.tenantId
 
@@ -213,6 +251,13 @@ router.get('/stock', async (req, res, next) => {
 
 // Get expenses summary
 router.get('/expenses', async (req, res, next) => {
+  if (replyIfTenantless(req, res, {
+    totalExpenses: 0,
+    expenseCount: 0,
+    categoryBreakdown: [],
+    dailyExpenses: [],
+  })) return
+
   try {
     const { range = 'month' } = req.query
     const now = new Date()
@@ -282,6 +327,18 @@ router.get('/expenses', async (req, res, next) => {
 
 // Get profit/loss summary
 router.get('/profit-loss', async (req, res, next) => {
+  if (replyIfTenantless(req, res, {
+    totalRevenue: 0,
+    totalExpenses: 0,
+    totalRefunds: 0,
+    netRevenue: 0,
+    grossProfit: 0,
+    orderCount: 0,
+    expenseCount: 0,
+    refundCount: 0,
+    margin: 0,
+  })) return
+
   try {
     const { range = 'month' } = req.query
     const now = new Date()
@@ -356,6 +413,8 @@ router.get('/profit-loss', async (req, res, next) => {
 
 // Dead Stock Report - products not sold in X days
 router.get('/dead-stock', async (req, res, next) => {
+  if (replyIfTenantless(req, res, { items: [], total_items: 0, total_value: 0 })) return
+
   try {
     const { days = 90, from_date, to_date, category_id, category } = req.query
 
