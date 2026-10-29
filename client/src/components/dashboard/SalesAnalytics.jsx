@@ -30,11 +30,13 @@ const hourLabel = (h) => {
 
 // Recharts' built-in tooltip is unstyled and assumes a light background.
 // This one follows the app's surface/border tokens.
-function ChartTooltip({ active, payload, label, format }) {
+function ChartTooltip({ active, payload, label, format, labelFormatter }) {
   if (!active || !payload?.length) return null
   return (
     <div className="rounded-lg border border-border bg-surface px-3 py-2 text-xs shadow-lg">
-      <p className="mb-1 font-semibold text-foreground">{label}</p>
+      <p className="mb-1 font-semibold text-foreground">
+        {labelFormatter ? labelFormatter(label) : label}
+      </p>
       {payload.map((entry) => (
         <p key={entry.dataKey} className="tabular-nums text-muted">
           <span
@@ -75,6 +77,9 @@ export default function SalesAnalytics() {
   const { analytics, loading } = useSalesAnalytics(range)
 
   const money = (v) => formatCurrency(v || 0, undefined, locale)
+  // The peak reduce falls back to hour0 on an all-zero series, which would
+  // label an empty chart "Peak: 12a" — only report a peak with real sales.
+  const peak = analytics?.peakHour?.sales > 0 ? analytics.peakHour : null
 
   return (
     <div className="space-y-5">
@@ -220,11 +225,11 @@ export default function SalesAnalytics() {
               icon={Clock}
               title={t('dashboard.hourlyActivity') || 'Sales by hour'}
               action={
-                analytics.peakHour ? (
+                peak ? (
                   <span className="text-xs text-muted">
                     {t('dashboard.peakHour') || 'Peak'}:{' '}
                     <span className="font-semibold text-foreground">
-                      {hourLabel(analytics.peakHour.hour)}
+                      {hourLabel(peak.hour)}
                     </span>
                   </span>
                 ) : null
@@ -249,14 +254,14 @@ export default function SalesAnalytics() {
                       width={56}
                       tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)}
                     />
-                    <Tooltip content={<ChartTooltip format={money} />} cursor={{ fill: ACCENT_SOFT, opacity: 0.4 }} />
+                    <Tooltip content={<ChartTooltip format={money} labelFormatter={hourLabel} />} cursor={{ fill: ACCENT_SOFT, opacity: 0.4 }} />
                     <Bar dataKey="sales" name={t('dashboard.revenue') || 'Revenue'} radius={[4, 4, 0, 0]}>
                       {/* Highlight the peak hour so the insight reads at a
                           glance instead of requiring a hover. */}
                       {analytics.hourly.map((h) => (
                         <Cell
                           key={h.hour}
-                          fill={h.hour === analytics.peakHour?.hour ? ACCENT : 'var(--border, #d1d5db)'}
+                          fill={h.hour === peak?.hour ? ACCENT : 'var(--border, #d1d5db)'}
                         />
                       ))}
                     </Bar>
