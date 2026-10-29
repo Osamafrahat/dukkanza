@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import supabase from '../db/supabase.js'
 import { authenticateToken, requirePermission } from '../middleware/auth.js'
-import { sendPromotionEmail, sendCustomEmail } from '../services/emailService.js'
+import { sendPromotionEmail, sendPurchaseOrderEmail } from '../services/emailService.js'
 import { sendPromotionWhatsApp, sendCustomWhatsApp } from '../services/whatsappService.js'
 
 const router = Router()
@@ -213,12 +213,19 @@ router.post('/purchase-order', authenticateToken, async (req, res) => {
       } else if (!emailConfigured) {
         results.email = [{ success: false, skipped: true, reason: 'email_not_configured' }]
       } else {
-        results.email = await sendCustomEmail({
-          recipients: [{ email: supplier.email, name: supplier.name }],
-          subject,
-          message,
-          storeName: store.name,
-        })
+        try {
+          await sendPurchaseOrderEmail({
+            to: supplier.email,
+            supplierName: supplier.contact_person || supplier.name,
+            po,
+            items: items || [],
+            store,
+          })
+          results.email = [{ success: true, email: supplier.email }]
+        } catch (mailErr) {
+          console.error('[EMAIL] Purchase order email FAILED:', mailErr.message)
+          results.email = [{ success: false, email: supplier.email, reason: 'send_failed' }]
+        }
       }
     }
 

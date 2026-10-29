@@ -277,6 +277,127 @@ export async function sendSubscriptionActivatedEmail({ to, name, storeName, plan
   return data
 }
 
+// Purchase-order email to a supplier. Bilingual AR-first + EN, the same
+// stacking the other transactional templates use (the server holds no
+// per-contact language). This deliberately does NOT reuse sendCustomEmail:
+// that one is the promotions blast sender, escapes the body into a single
+// <p> (which flattens the line breaks into one run-on paragraph), and has no
+// notion of line items. A PO is transactional mail a supplier replies to, so
+// it gets the orders@ sender and a real table of lines.
+export async function sendPurchaseOrderEmail({ to, supplierName, po, items = [], store = {} }) {
+  const client = getResendClient()
+  if (!client) throw new Error('RESEND_API_KEY not configured')
+
+  const safeOrder = escapeHtml(po.order_number || '')
+  const safeSupplier = escapeHtml(supplierName || '')
+  const safeStore = escapeHtml(store.name || '')
+  const expectedAr = po.expected_date ? new Date(po.expected_date).toLocaleDateString('ar-EG') : ''
+  const expectedEn = po.expected_date ? new Date(po.expected_date).toLocaleDateString('en-GB') : ''
+  const amount = (v) => escapeHtml(String(parseFloat(v)))
+
+  // Line items are pre-escaped once, then rendered into whichever table the
+  // direction needs — so AR and EN can never drift in content.
+  const lines = (items || []).map((item) => ({
+    name: escapeHtml(item.product_name || ''),
+    qty: escapeHtml(String(item.quantity)),
+    unit: amount(item.unit_price),
+    total: amount(
+      item.total != null
+        ? item.total
+        : parseFloat(item.quantity) * parseFloat(item.unit_price)
+    ),
+  }))
+
+  const table = (dir) => {
+    const align = dir === 'rtl' ? 'right' : 'left'
+    const head = dir === 'rtl'
+      ? ['المنتج', 'الكمية', 'سعر الوحدة', 'الإجمالي']
+      : ['Product', 'Qty', 'Unit price', 'Line total']
+    return `
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:14px 0;font-size:14px">
+        <thead>
+          <tr>
+            ${head.map((h) => `<th align="${align}" style="padding:8px 10px;border-bottom:2px solid #667eea;color:#333">${h}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${lines.map((l) => `
+          <tr>
+            <td align="${align}" style="padding:8px 10px;border-bottom:1px solid #eee">${l.name}</td>
+            <td align="${align}" style="padding:8px 10px;border-bottom:1px solid #eee">${l.qty}</td>
+            <td align="${align}" style="padding:8px 10px;border-bottom:1px solid #eee">${l.unit}</td>
+            <td align="${align}" style="padding:8px 10px;border-bottom:1px solid #eee">${l.total}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`
+  }
+
+  const html = `
+    <!DOCTYPE html>
+    <html lang="ar">
+    <head>
+      <meta charset="UTF-8">
+      <style>
+        body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; background: #f5f5f5; margin: 0; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 28px 30px; text-align: center; }
+        .header h1 { margin: 0; font-size: 22px; }
+        .content { padding: 28px 30px; color: #333; line-height: 1.8; }
+        .total { font-size: 17px; font-weight: bold; color: #667eea; margin: 12px 0; }
+        .divider { border: 0; border-top: 1px solid #eee; margin: 22px 0; }
+        .muted { color: #888; font-size: 13px; }
+        .footer { background: #f8f9fa; padding: 18px 30px; text-align: center; color: #999; font-size: 12px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>أمر شراء ${safeOrder}</h1>
+          <p style="margin:6px 0 0;opacity:.85">Purchase Order ${safeOrder}</p>
+        </div>
+
+        <div class="content" dir="rtl">
+          <p>مرحباً ${safeSupplier}،</p>
+          ${expectedAr ? `<p class="muted">التاريخ المتوقع للتسليم: <strong>${expectedAr}</strong></p>` : ''}
+          ${table('rtl')}
+          <p class="total">إجمالي الطلب: ${amount(po.total)}</p>
+          ${po.notes ? `<p class="muted">ملاحظات: ${escapeHtml(po.notes)}</p>` : ''}
+          <hr class="divider">
+          <p class="muted">
+            معلومات المتجر<br>
+            المتجر: ${safeStore}${store.address ? `<br>الموقع: ${escapeHtml(store.address)}` : ''}${store.phone ? `<br>الهاتف: ${escapeHtml(store.phone)}` : ''}
+          </p>
+        </div>
+
+        <hr class="divider" style="margin:0">
+
+        <div class="content" dir="ltr" style="padding-top:24px">
+          <p>Hi ${safeSupplier || 'there'},</p>
+          ${expectedEn ? `<p class="muted">Expected delivery date: <strong>${expectedEn}</strong></p>` : ''}
+          ${table('ltr')}
+          <p class="total">Order total: ${amount(po.total)}</p>
+          ${po.notes ? `<p class="muted">Notes: ${escapeHtml(po.notes)}</p>` : ''}
+          <hr class="divider">
+          <p class="muted">
+            Store information<br>
+            Store: ${safeStore}${store.address ? `<br>Location: ${escapeHtml(store.address)}` : ''}${store.phone ? `<br>Phone: ${escapeHtml(store.phone)}` : ''}
+          </p>
+        </div>
+
+        <div class="footer">© ${new Date().getFullYear()} Dukkanza. All rights reserved. | جميع الحقوق محفوظة</div>
+      </div>
+    </body>
+    </html>
+  `
+
+  const from = senderFor('orders')
+  const subject = `أمر شراء ${safeOrder} — ${safeStore} / Purchase Order ${po.order_number} — ${store.name}`
+  const { data, error } = await sendPayload(client, { from, to, subject, html })
+  if (error) throw new Error(error.message)
+  console.log('[EMAIL] Purchase order sent:', data?.id)
+  return data
+}
+
 export async function sendCustomEmail({ recipients, subject, message, storeName }) {
   const client = getResendClient()
   if (!client) throw new Error('RESEND_API_KEY not configured')
