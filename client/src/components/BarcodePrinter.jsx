@@ -1,68 +1,93 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useLayoutEffect } from 'react'
 import { X, Printer, Download } from 'lucide-react'
+import JsBarcode from 'jsbarcode'
 import { useAppStore } from '../stores/appStore'
 import { escapeHtml } from '../lib/html'
+import { pickBarcodeFormat } from '../lib/barcode'
 
-// Simple barcode generator using Code 128
-function generateBarcode(value) {
-  const charWidth = 2
-  const barHeight = 50
-  const quietZone = 10
-
-  // Simple encoding: use character codes to determine bar widths
-  const bars = []
-  for (let i = 0; i < value.length; i++) {
-    const charCode = value.charCodeAt(i)
-    // Generate alternating bars based on character code
-    bars.push({ width: (charCode % 3) + 1, dark: true })
-    bars.push({ width: 1, dark: false })
-    bars.push({ width: (charCode % 4) + 1, dark: true })
-    bars.push({ width: 1, dark: false })
-  }
-
-  const totalWidth = bars.reduce((sum, bar) => sum + bar.width * charWidth, 0) + quietZone * 2
-
-  return { bars, totalWidth, barHeight, charWidth, quietZone }
-}
-
+// Renders a REAL, standards-compliant barcode via JsBarcode.
+//
+// The previous implementation was a hand-rolled fake: bars derived from
+// `charCodeAt(i) % 3` / `% 4` with no start/stop patterns, no checksum and
+// no symbol structure — despite the "using Code 128" comment. No scanner in
+// the world can decode that, which is why printed labels never scanned.
+// It also stretched bars horizontally only (`scale(scale, 1)`), corrupting
+// module widths even further.
 function BarcodeSVG({ value, width = 200, height = 80, showText = true }) {
-  const barcode = generateBarcode(value)
-  const scale = (width - barcode.quietZone * 2) / barcode.totalWidth
+  const svgRef = useRef(null)
 
-  return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-      <rect x="0" y="0" width={width} height={height} fill="white" />
-      <g transform={`translate(${barcode.quietZone}, 0) scale(${scale}, 1)`}>
-        {barcode.bars.map((bar, i) => {
-          const x = barcode.bars.slice(0, i).reduce((sum, b) => sum + b.width * barcode.charWidth, 0)
-          if (bar.dark) {
-            return (
-              <rect
-                key={i}
-                x={x}
-                y={0}
-                width={bar.width * barcode.charWidth}
-                height={barcode.barHeight}
-                fill="black"
-              />
-            )
-          }
-          return null
-        })}
-      </g>
-      {showText && (
-        <text
-          x={width / 2}
-          y={height - 5}
-          textAnchor="middle"
-          fontSize="10"
-          fontFamily="monospace"
-        >
-          {value}
-        </text>
-      )}
-    </svg>
-  )
+  useLayoutEffect(() => {
+    const el = svgRef.current
+    if (!el) return
+
+    // Value Code 128 cannot encode (or no value at all): show it as plain
+    // text instead of an empty box.
+    const showFallback = () => {
+      while (el.firstChild) el.removeChild(el.firstChild)
+      el.setAttribute('viewBox', `0 0 ${width} ${height}`)
+      el.setAttribute('preserveAspectRatio', 'xMidYMid meet')
+      el.setAttribute('width', String(width))
+      el.setAttribute('height', String(height))
+      el.setAttribute('data-format', 'none')
+      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text')
+      text.setAttribute('x', String(width / 2))
+      text.setAttribute('y', String(height / 2))
+      text.setAttribute('text-anchor', 'middle')
+      text.setAttribute('dominant-baseline', 'middle')
+      text.setAttribute('font-size', '11')
+      text.setAttribute('font-family', 'monospace')
+      text.setAttribute('fill', '#666666')
+      text.textContent = value || '—'
+      el.appendChild(text)
+    }
+
+    if (!value) {
+      showFallback()
+      return
+    }
+
+    const format = pickBarcodeFormat(value)
+    try {
+      JsBarcode(el, value, {
+        format,
+        width: 2,   // module width in SVG units
+        height: 44, // bar height
+        // Quiet zone: JsBarcode applies `margin` raw (in SVG units, not
+        // module multiples), so 10 would be only 5 modules — below the
+        // 10-module quiet zone both Code 128 and EAN-13 scanners expect.
+        // 20 units = 10 modules at width 2.
+        margin: 20,
+        displayValue: showText,
+        fontSize: 11,
+        font: 'monospace',
+        background: '#ffffff',
+        lineColor: '#000000',
+      })
+    } catch {
+      showFallback()
+      return
+    }
+
+    // JsBarcode sizes the SVG to the symbol's natural dimensions (it clears
+    // and rebuilds the children on every call, so re-renders never stack).
+    // Keep that as the viewBox and re-apply the requested box: the default
+    // preserveAspectRatio (xMidYMid meet) then scales the symbol UNIFORMLY
+    // into width x height — the old `scale(scale, 1)` stretched bars
+    // horizontally only, distorting module widths.
+    // JsBarcode writes the size as e.g. "254px"; viewBox needs unitless
+    // numbers, so parse rather than copy the raw attribute.
+    const naturalW = parseFloat(el.getAttribute('width'))
+    const naturalH = parseFloat(el.getAttribute('height'))
+    if (naturalW > 0 && naturalH > 0) {
+      el.setAttribute('viewBox', `0 0 ${naturalW} ${naturalH}`)
+    }
+    el.setAttribute('preserveAspectRatio', 'xMidYMid meet')
+    el.setAttribute('width', String(width))
+    el.setAttribute('height', String(height))
+    el.setAttribute('data-format', format)
+  }, [value, showText, width, height])
+
+  return <svg ref={svgRef} />
 }
 
 export default function BarcodePrinter({ product, onClose }) {
