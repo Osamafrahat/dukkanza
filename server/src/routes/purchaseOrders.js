@@ -358,17 +358,40 @@ router.patch('/:id/receive', async (req, res, next) => {
         .from('accounts').select('id').eq('code', '1050').eq('tenant_id', tid).single()
 
       let apCode = '2010'
+      let supplierRow = null
       if (po.supplier_id) {
-        const { data: supplierRow } = await supabase
+        const { data } = await supabase
           .from('suppliers')
-          .select('account_code')
+          .select('account_code, name')
           .eq('id', po.supplier_id)
           .eq('tenant_id', tid)
           .single()
+        supplierRow = data
         if (supplierRow?.account_code) apCode = supplierRow.account_code
       }
-      const apAccount = await supabase
-        .from('accounts').select('id').eq('code', apCode).eq('tenant_id', tid).single()
+
+      let apAccount = (await supabase
+        .from('accounts').select('id').eq('code', apCode).eq('tenant_id', tid).single()).data
+
+      // Suppliers get account_code `2010-S{id}` at creation, but NOTHING
+      // ever inserts the matching accounts row — only postStockReceiveJournal
+      // does, as a side effect of an unrelated product-create flow. Without
+      // this lookup misses, the journal is skipped again, and the Suppliers
+      // page (which reads accounts.balance by that code) stays at 0 forever.
+      // Same shape and account_type as that function's auto-create.
+      if (!apAccount && supplierRow?.account_code) {
+        const { data: created } = await supabase
+          .from('accounts')
+          .insert({
+            tenant_id: tid,
+            code: supplierRow.account_code,
+            name: `AP - ${supplierRow.name}`,
+            account_type: 'liability',
+          })
+          .select('id')
+          .single()
+        apAccount = created
+      }
 
       // PO items store `unit_price` plus a precomputed `total` — there is no
       // `unit_cost` column. Reading it produced NaN -> 0, so totalCost was
@@ -386,14 +409,14 @@ router.patch('/:id/receive', async (req, res, next) => {
         // either: a dropped journal used to look exactly like "nothing
         // happened to any account".
         console.error('[PO RECEIVE] journal skipped: total', totalCost, 'for', po.order_number)
-      } else if (!inventoryAccount.data || !apAccount.data) {
+      } else if (!inventoryAccount.data || !apAccount) {
         console.error('[PO RECEIVE] journal skipped: no account 1050 or', apCode, 'for tenant', tid)
       } else {
         const date = new Date().toISOString().split('T')[0]
         const ref = `PO-${po.order_number}`
         const lines = [
           { accountId: inventoryAccount.data.id, debit: totalCost, credit: 0, description: `Inventory received - ${ref}` },
-          { accountId: apAccount.data.id, debit: 0, credit: totalCost, description: `AP ${apCode} - ${ref}` },
+          { accountId: apAccount.id, debit: 0, credit: totalCost, description: `AP ${apCode} - ${ref}` },
         ]
         await createJournalEntry({
           date,

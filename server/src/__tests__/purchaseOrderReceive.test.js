@@ -58,6 +58,12 @@ const ACCOUNTS = {
   '20101': { id: 22, code: '20101' }, // supplier's own payable
 }
 
+// Codes whose accounts row does NOT exist yet (the real-world default:
+// suppliers get account_code at creation but nothing inserts the row).
+const missingAccounts = new Set()
+// Payloads of every accounts insert the route performed.
+const accountsInserts = []
+
 function makeAccountsFrom() {
   const chain = {}
   for (const m of ['select', 'in', 'order', 'limit', 'range', 'gte', 'lte']) {
@@ -68,7 +74,19 @@ function makeAccountsFrom() {
     if (col === 'code') codes.push(val)
     return chain
   })
-  const result = () => ({ data: ACCOUNTS[codes[codes.length - 1]] ?? null, error: null })
+  let inserted = null
+  chain.insert = jest.fn((payload) => {
+    inserted = payload
+    accountsInserts.push(payload)
+    return chain
+  })
+  const result = () => {
+    // An insert in flight answers its own `.select('id').single()`.
+    if (inserted) return { data: { id: 77, code: inserted.code }, error: null }
+    const code = codes[codes.length - 1]
+    if (missingAccounts.has(code)) return { data: null, error: null }
+    return { data: ACCOUNTS[code] ?? null, error: null }
+  }
   chain.single = jest.fn(() => Promise.resolve(result()))
   chain.maybeSingle = jest.fn(() => Promise.resolve(result()))
   chain.then = (resolve, reject) => Promise.resolve(result()).then(resolve, reject)
@@ -144,6 +162,8 @@ function prime({ accountCode = '20101' } = {}) {
 beforeEach(() => {
   queues.clear()
   defaults.clear()
+  missingAccounts.clear()
+  accountsInserts.length = 0
   jest.clearAllMocks()
   prime()
 })
@@ -185,6 +205,27 @@ describe('receive — journal posting', () => {
 
     const { lines } = journalSpy.mock.calls[0][0]
     expect(lines[1].accountId).toBe(99)
+  })
+
+  it('creates the missing per-supplier accounts row', async () => {
+    // The realistic case: suppliers are stamped with account_code at
+    // creation but no accounts row is ever inserted for it, so the lookup
+    // misses. Without creating the row here the journal is skipped AND the
+    // Suppliers page reads accounts.balance for that code — showing 0.
+    missingAccounts.add('20101')
+
+    const res = await receive()
+
+    expect(res.status).toBe(200)
+    expect(accountsInserts).toHaveLength(1)
+    expect(accountsInserts[0]).toMatchObject({
+      code: '20101',
+      account_type: 'liability',
+    })
+
+    // The journal credits the newly created account, not generic 2010.
+    const { lines } = journalSpy.mock.calls[0][0]
+    expect(lines[1].accountId).toBe(77)
   })
 
   it('still receives the goods if the journal fails', async () => {
