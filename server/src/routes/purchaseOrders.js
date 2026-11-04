@@ -341,26 +341,59 @@ router.patch('/:id/receive', async (req, res, next) => {
       .eq('purchase_order_id', data.id)
       .eq('tenant_id', req.user?.tenantId)
 
-    // Accounting: Debit Inventory (1050), Credit Accounts Payable (2010)
+    // Accounting: Debit Inventory (1050), Credit Accounts Payable.
+    //
+    // The payable must land on THIS SUPPLIER's own account
+    // (suppliers.account_code): the Suppliers page derives its "remaining
+    // balance" from accounts.balance of exactly that account, and
+    // payments.js debits the same account when settling up — so receiving
+    // goods and paying the supplier move opposite ends of one figure. The
+    // generic 2010 is only the fallback for suppliers with no account
+    // assigned, mirroring payments.js.
     try {
       const { createJournalEntry } = await import('../services/accountingEngine.js')
       const tid = req.user?.tenantId
 
-      const inventoryAccount = await supabase.from('accounts').select('id').eq('code', '1050').eq('tenant_id', tid).single()
-      const apAccount = await supabase.from('accounts').select('id').eq('code', '2010').eq('tenant_id', tid).single()
+      const inventoryAccount = await supabase
+        .from('accounts').select('id').eq('code', '1050').eq('tenant_id', tid).single()
 
-      // Calculate total cost from PO items
+      let apCode = '2010'
+      if (po.supplier_id) {
+        const { data: supplierRow } = await supabase
+          .from('suppliers')
+          .select('account_code')
+          .eq('id', po.supplier_id)
+          .eq('tenant_id', tid)
+          .single()
+        if (supplierRow?.account_code) apCode = supplierRow.account_code
+      }
+      const apAccount = await supabase
+        .from('accounts').select('id').eq('code', apCode).eq('tenant_id', tid).single()
+
+      // PO items store `unit_price` plus a precomputed `total` — there is no
+      // `unit_cost` column. Reading it produced NaN -> 0, so totalCost was
+      // always 0 and the guard below skipped this journal every time.
       let totalCost = 0
       for (const item of (updatedItems || [])) {
-        totalCost += (parseFloat(item.unit_cost) || 0) * (item.quantity || 0)
+        const lineTotal = item.total != null
+          ? parseFloat(item.total)
+          : (parseFloat(item.unit_price) || 0) * (item.quantity || 0)
+        totalCost += lineTotal
       }
 
-      if (totalCost > 0 && inventoryAccount.data && apAccount.data) {
+      if (!(totalCost > 0)) {
+        // Never fail the receive over accounting — but never fail SILENTLY
+        // either: a dropped journal used to look exactly like "nothing
+        // happened to any account".
+        console.error('[PO RECEIVE] journal skipped: total', totalCost, 'for', po.order_number)
+      } else if (!inventoryAccount.data || !apAccount.data) {
+        console.error('[PO RECEIVE] journal skipped: no account 1050 or', apCode, 'for tenant', tid)
+      } else {
         const date = new Date().toISOString().split('T')[0]
         const ref = `PO-${po.order_number}`
         const lines = [
           { accountId: inventoryAccount.data.id, debit: totalCost, credit: 0, description: `Inventory received - ${ref}` },
-          { accountId: apAccount.data.id, debit: 0, credit: totalCost, description: `AP - ${ref}` },
+          { accountId: apAccount.data.id, debit: 0, credit: totalCost, description: `AP ${apCode} - ${ref}` },
         ]
         await createJournalEntry({
           date,
