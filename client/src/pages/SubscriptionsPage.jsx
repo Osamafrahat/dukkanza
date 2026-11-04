@@ -1,10 +1,12 @@
 import ConfirmModal from '../components/ConfirmModal'
 import SearchableSelect from '../components/SearchableSelect'
+import BarcodePrinter from '../components/BarcodePrinter'
 import { X, Plus, Edit2, Trash2, RefreshCw, Ban, CreditCard, User } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { useUserStore, PERMISSIONS } from '../stores/userStore'
 import { subscriptionsApi, servicesApi, servicePlansApi, customersApi } from '../lib/api'
+import { subscriptionBarcode, isSubscriptionValid } from '../lib/subscriptions'
 
 const STATUS_STYLES = {
 active:'bg-success-soft text-success-soft-foreground',
@@ -37,6 +39,8 @@ export default function SubscriptionsPage() {
   const [showPayments, setShowPayments] = useState(null)
   const [cancelTarget, setCancelTarget] = useState(null)
   const [renewTarget, setRenewTarget] = useState(null)
+  // Subscription whose barcode label is open; the row checkbox reflects it.
+  const [barcodeTarget, setBarcodeTarget] = useState(null)
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberate trigger list: the loader below is re-created each render and is intentionally NOT a dep, so only these inputs refetch
   useEffect(() => { fetchData() }, [filterStatus])
@@ -100,6 +104,8 @@ export default function SubscriptionsPage() {
     }
   }
 
+  const barcodeValid = isSubscriptionValid(barcodeTarget)
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -138,18 +144,33 @@ className={`px-3 py-1.5 rounded-lg text-sm font-medium ${filterStatus===s ?'bg-a
             <table className="w-full text-sm">
               <thead>
 <tr className="border-b border-border">
+<th className="p-4 w-10"><span className="sr-only">{t('services.getBarcode') || 'Get barcode'}</span></th>
 <th className="text-start p-4 font-medium text-muted">{t('services.customer')||'Customer'}</th>
 <th className="text-start p-4 font-medium text-muted">{t('services.plan')||'Plan'}</th>
 <th className="text-start p-4 font-medium text-muted">{t('services.amount')||'Amount'}</th>
 <th className="text-start p-4 font-medium text-muted">{t('services.startDate')||'Start'}</th>
 <th className="text-start p-4 font-medium text-muted">{t('services.endDate')||'End'}</th>
+<th className="text-start p-4 font-medium text-muted">{t('services.validity')||'Validity'}</th>
 <th className="text-start p-4 font-medium text-muted">{t('services.status')||'Status'}</th>
 {canEdit &&<th className="text-end p-4 font-medium text-muted">{t('common.actions')||'Actions'}</th>}
                 </tr>
               </thead>
               <tbody>
-                {subscriptions.map(sub => (
+                {subscriptions.map(sub => {
+                  const valid = isSubscriptionValid(sub)
+                  return (
 <tr key={sub.id}className="border-b border-border bg-surface-hover">
+                    <td className="p-4">
+                      {/* Tick to get this subscription's barcode label */}
+                      <input
+                        type="checkbox"
+                        checked={barcodeTarget?.id === sub.id}
+                        onChange={(e) => setBarcodeTarget(e.target.checked ? sub : null)}
+                        title={t('services.getBarcode') || 'Get barcode'}
+                        aria-label={`${t('services.getBarcode') || 'Get barcode'}: ${sub.customer?.name || sub.id}`}
+                        className="rounded cursor-pointer"
+                      />
+                    </td>
                     <td className="p-4">
                       <div className="flex items-center gap-2">
 <User className="w-4 h-4 text-muted"/>
@@ -160,6 +181,13 @@ className={`px-3 py-1.5 rounded-lg text-sm font-medium ${filterStatus===s ?'bg-a
                     <td className="p-4 font-semibold">{sub.billing_amount?.toLocaleString()} {t('common.currency') || 'EGP'}</td>
                     <td className="p-4">{sub.start_date}</td>
                     <td className="p-4">{sub.end_date || '-'}</td>
+                    <td className="p-4">
+                      {/* Computed: status alone can be stale (nothing
+                          auto-expires rows past their end_date). */}
+                      <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${valid ? 'bg-success-soft text-success-soft-foreground' : 'bg-danger-soft text-danger-soft-foreground'}`}>
+                        {valid ? (t('services.valid') || 'Valid') : (t('services.statusExpired') || 'Expired')}
+                      </span>
+                    </td>
                     <td className="p-4">
                       <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${STATUS_STYLES[sub.status] || ''}`}>
                         {t(STATUS_LABEL_KEYS[sub.status]) || sub.status}
@@ -186,7 +214,8 @@ className="p-1.5 text-muted hover:text-red-600 rounded-lg"><Trash2 className="w-
                       </td>
                     )}
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -211,6 +240,20 @@ className="p-1.5 text-muted hover:text-red-600 rounded-lg"><Trash2 className="w-
           toastError(err.response?.data?.error || t('common.error') || 'Error')
         }
       }} />}
+      {barcodeTarget && (
+        <BarcodePrinter
+          product={{
+            id: barcodeTarget.id,
+            name: [barcodeTarget.customer?.name, barcodeTarget.plan?.name || barcodeTarget.service?.name]
+              .filter(Boolean).join(' — ') || t('barcode.unknownProduct'),
+            barcode: subscriptionBarcode(barcodeTarget),
+            price: Number(barcodeTarget.billing_amount) || 0,
+          }}
+          note={barcodeValid ? (t('services.valid') || 'Valid') : (t('services.statusExpired') || 'Expired')}
+          noteClass={barcodeValid ? 'text-success' : 'text-danger'}
+          onClose={() => setBarcodeTarget(null)}
+        />
+      )}
       <ConfirmModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={() => handleDelete(deleteTarget)}
         title={t('services.deleteSubscription') || 'Delete Subscription'} message={t('services.deleteSubConfirm') || 'Are you sure?'} type="danger" loading={deleting} />
       <ConfirmModal open={!!cancelTarget} onClose={() => setCancelTarget(null)} onConfirm={() => handleCancel(cancelTarget)}

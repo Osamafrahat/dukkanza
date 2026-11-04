@@ -90,7 +90,7 @@ function BarcodeSVG({ value, width = 200, height = 80, showText = true }) {
   return <svg ref={svgRef} />
 }
 
-export default function BarcodePrinter({ product, onClose }) {
+export default function BarcodePrinter({ product, onClose, note, noteClass }) {
   const { t } = useAppStore()
   const [quantity, setQuantity] = useState(1)
   const [labelWidth, setLabelWidth] = useState(50)
@@ -121,6 +121,7 @@ export default function BarcodePrinter({ product, onClose }) {
             }
             .product-name { font-size: 8px; margin-bottom: 2px; }
             .product-price { font-size: 10px; font-weight: bold; }
+            .product-note { font-size: 9px; font-weight: bold; margin-top: 1px; }
             @media print {
               .no-print { display: none; }
             }
@@ -136,6 +137,7 @@ export default function BarcodePrinter({ product, onClose }) {
               <div class="product-name">${escapeHtml(product?.name || '')}</div>
               <div>${printContent.innerHTML}</div>
               <div class="product-price">$${escapeHtml(product?.price?.toFixed(2) || '0.00')}</div>
+              ${note ? `<div class="product-note">${escapeHtml(String(note))}</div>` : ''}
             </div>
           `).join('')}
         </body>
@@ -194,6 +196,9 @@ className="p-2 rounded-lg bg-surface-hover"
             <p className="font-medium">{product?.name || t('barcode.unknownProduct')}</p>
 <p className="text-sm text-muted">{t('barcode.barcode')}:{barcodeValue}</p>
 <p className="text-sm text-muted">{t('barcode.price')}: ${product?.price?.toFixed(2)||'0.00'}</p>
+            {note && (
+              <p className={`text-sm font-semibold ${noteClass || 'text-muted'}`}>{note}</p>
+            )}
           </div>
 
           {/* Preview */}
