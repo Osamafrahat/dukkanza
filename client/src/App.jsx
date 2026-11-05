@@ -44,6 +44,7 @@ const PerformanceReviewsPage = lazy(() => import('./pages/PerformanceReviewsPage
 const ServicesPage = lazy(() => import('./pages/ServicesPage'))
 const ServicePlansPage = lazy(() => import('./pages/ServicePlansPage'))
 const SubscriptionsPage = lazy(() => import('./pages/SubscriptionsPage'))
+const SubscriptionCheckPage = lazy(() => import('./pages/SubscriptionCheckPage'))
 const SignupPage = lazy(() => import('./pages/SignupPage'))
 const PricingPage = lazy(() => import('./pages/PricingPage'))
 const BillingPage = lazy(() => import('./pages/BillingPage'))
@@ -171,6 +172,7 @@ function App() {
                 <Route path="/services" element={<ProtectedRoute><Layout><ServicesPage /></Layout></ProtectedRoute>} />
                 <Route path="/service-plans" element={<ProtectedRoute><Layout><ServicePlansPage /></Layout></ProtectedRoute>} />
                 <Route path="/subscriptions" element={<ProtectedRoute><Layout><SubscriptionsPage /></Layout></ProtectedRoute>} />
+                <Route path="/subscriptions/check" element={<ProtectedRoute><Layout><SubscriptionCheckPage /></Layout></ProtectedRoute>} />
                 <Route path="/cash-shifts" element={<ProtectedRoute><Layout><CashShiftPage /></Layout></ProtectedRoute>} />
                 <Route path="/credit-sales" element={<ProtectedRoute><Layout><CreditSalesPage /></Layout></ProtectedRoute>} />
                 <Route path="/purchase-orders" element={<ProtectedRoute><Layout><PurchaseOrdersPage /></Layout></ProtectedRoute>} />

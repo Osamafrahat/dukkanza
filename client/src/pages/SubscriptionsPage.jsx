@@ -1,8 +1,9 @@
 import ConfirmModal from '../components/ConfirmModal'
 import SearchableSelect from '../components/SearchableSelect'
 import BarcodePrinter from '../components/BarcodePrinter'
-import { X, Plus, Edit2, Trash2, RefreshCw, Ban, CreditCard, User } from 'lucide-react'
+import { X, Plus, Edit2, Trash2, RefreshCw, Ban, CreditCard, User, ScanBarcode } from 'lucide-react'
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { useUserStore, PERMISSIONS } from '../stores/userStore'
 import { subscriptionsApi, servicesApi, servicePlansApi, customersApi } from '../lib/api'
@@ -113,12 +114,20 @@ export default function SubscriptionsPage() {
           <h1 className="text-2xl font-bold">{t('services.subscriptionsTitle') || 'Subscriptions'}</h1>
 <p className="text-muted">{t('services.subscriptionsSubtitle')||'Manage customer subscriptions'}</p>
         </div>
-        {canEdit && (
-          <button onClick={() => { setEditing(null); setShowForm(true) }}
+        <div className="flex items-center gap-2">
+          <Link
+            to="/subscriptions/check"
+            className="flex items-center gap-2 px-4 py-2 bg-surface-tertiary text-foreground rounded-lg hover:bg-surface-hover"
+          >
+            <ScanBarcode className="w-4 h-4" />{t('services.checkSubscription') || 'Check Barcode'}
+          </Link>
+          {canEdit && (
+            <button onClick={() => { setEditing(null); setShowForm(true) }}
 className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hover:bg-primary-700">
-            <Plus className="w-4 h-4" />{t('services.addSubscription') || 'Add Subscription'}
-          </button>
-        )}
+              <Plus className="w-4 h-4" />{t('services.addSubscription') || 'Add Subscription'}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Filters */}

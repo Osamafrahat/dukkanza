@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { subscriptionBarcode, isSubscriptionValid } from './subscriptions'
+import { subscriptionBarcode, isSubscriptionValid, parseSubscriptionBarcode } from './subscriptions'
 
 // Nothing auto-expires subscriptions: status can still read 'active' long
 // after end_date passed. Validity must therefore be computed, and the
@@ -67,5 +67,43 @@ describe('isSubscriptionValid', () => {
   it('uses the real current date when no today is injected', () => {
     expect(isSubscriptionValid({ status: 'active', end_date: '2000-01-01' })).toBe(false)
     expect(isSubscriptionValid({ status: 'active' })).toBe(true)
+  })
+})
+
+describe('parseSubscriptionBarcode', () => {
+  it('parses the printed SUB-{id} form', () => {
+    expect(parseSubscriptionBarcode('SUB-42')).toBe(42)
+  })
+
+  it('tolerates scanner noise: case, surrounding whitespace and CR/LF', () => {
+    expect(parseSubscriptionBarcode(' sub-7 ')).toBe(7)
+    expect(parseSubscriptionBarcode('SUB-9\r\n')).toBe(9)
+    expect(parseSubscriptionBarcode('SUB-12\n')).toBe(12)
+  })
+
+  it('accepts a bare id typed at the desk', () => {
+    expect(parseSubscriptionBarcode('42')).toBe(42)
+  })
+
+  it('rejects anything that is not a positive integer id', () => {
+    // No server round-trip: ids are serial from 1, so null means "do not
+    // even ask".
+    expect(parseSubscriptionBarcode('')).toBe(null)
+    expect(parseSubscriptionBarcode('   ')).toBe(null)
+    expect(parseSubscriptionBarcode(null)).toBe(null)
+    expect(parseSubscriptionBarcode(undefined)).toBe(null)
+    expect(parseSubscriptionBarcode('GARBAGE')).toBe(null)
+    expect(parseSubscriptionBarcode('SUB-')).toBe(null)
+    expect(parseSubscriptionBarcode('SUB-0')).toBe(null)     // serials start at 1
+    expect(parseSubscriptionBarcode('0')).toBe(null)
+    expect(parseSubscriptionBarcode('SUB--5')).toBe(null)
+    expect(parseSubscriptionBarcode('SUB-42-1')).toBe(null)
+    expect(parseSubscriptionBarcode('SUB-42A')).toBe(null)
+    expect(parseSubscriptionBarcode('12.5')).toBe(null)
+    expect(parseSubscriptionBarcode('SUB-99999999999999999999')).toBe(null) // > MAX_SAFE_INTEGER
+  })
+
+  it('round-trips a value produced by subscriptionBarcode', () => {
+    expect(parseSubscriptionBarcode(subscriptionBarcode({ id: 123 }))).toBe(123)
   })
 })

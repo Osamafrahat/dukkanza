@@ -13,6 +13,23 @@ export function subscriptionBarcode(sub) {
 }
 
 /**
+ * Parse a scanned or typed subscription barcode into a subscription id.
+ *
+ * Accepts the printed `SUB-42` form and a bare id (so a desk user can just
+ * type "42"). Whitespace is trimmed first because barcode scanners
+ * commonly append CR/LF to what they type. Returns null for anything that
+ * is not a positive integer id — ids are serial and start at 1, so `null`
+ * means "do not even ask the server".
+ */
+export function parseSubscriptionBarcode(value) {
+  const raw = String(value ?? '').trim().toUpperCase()
+  const match = /^(?:SUB-)?([1-9]\d*)$/.exec(raw)
+  if (!match) return null
+  const id = Number(match[1])
+  return Number.isSafeInteger(id) ? id : null
+}
+
+/**
  * Validity is COMPUTED, not read from `status`: nothing auto-expires stale
  * rows, so status can still say 'active' long after end_date has passed —
  * which is exactly the case this check exists to catch.
