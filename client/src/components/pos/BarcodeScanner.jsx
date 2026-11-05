@@ -1,6 +1,7 @@
-import { X, Camera, Keyboard, Check, Loader2 } from 'lucide-react'
+import { X, Camera, Keyboard, Check, Loader2, RefreshCw } from 'lucide-react'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAppStore } from '../../stores/appStore'
+import { cameraErrorMessage } from '../../lib/camera'
 
 export default function BarcodeScanner({ onScan, onClose }) {
   const { t } = useAppStore()
@@ -12,7 +13,9 @@ export default function BarcodeScanner({ onScan, onClose }) {
   const [lastScanned, setLastScanned] = useState('')
   const [lastProductName, setLastProductName] = useState('')
   const [flash, setFlash] = useState(false)
-  const [cameraError, setCameraError] = useState('')
+  // { key, params? } — a translation key, not a pre-baked English string,
+  // so the message follows the active language.
+  const [cameraError, setCameraError] = useState(null)
   const inputRef = useRef(null)
   const videoRef = useRef(null)
   const streamRef = useRef(null)
@@ -76,11 +79,32 @@ export default function BarcodeScanner({ onScan, onClose }) {
   }, [handleScanResult])
 
   const startCamera = async () => {
-    try {
-      setCameraLoading(true)
-      setCameraError('')
-      setMode('camera')
+    setCameraLoading(true)
+    setCameraError(null)
+    setMode('camera')
 
+    // getUserMedia only exists in a secure context (HTTPS or localhost).
+    // On plain HTTP it is undefined and the call below would throw a bare
+    // TypeError — say what is actually wrong instead.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError({ key: 'scanner.insecure' })
+      setMode('manual')
+      setCameraLoading(false)
+      return
+    }
+
+    // Probe the CURRENT permission state before asking for the stream. A
+    // denial the browser has already recorded is never re-prompted, so we
+    // must be able to tell "you blocked this site, here is how to undo it"
+    // apart from "you just dismissed the prompt".
+    let permissionState = 'prompt'
+    try {
+      permissionState = (await navigator.permissions?.query({ name: 'camera' }))?.state || 'prompt'
+    } catch {
+      /* Permissions API unsupported (older Safari/Firefox) — fall back to prompting */
+    }
+
+    try {
       // Check if BarcodeDetector is natively supported, otherwise use @zxing/library
       let useNative = 'BarcodeDetector' in window
 
@@ -109,10 +133,21 @@ export default function BarcodeScanner({ onScan, onClose }) {
         }
       }
 
-      // Get camera stream
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-      })
+      // Get camera stream. Prefer the rear camera, but retry with any
+      // camera if the device rejects that constraint (desktops/webcams
+      // often have no 'environment' camera and would otherwise fail).
+      let stream
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+        })
+      } catch (err) {
+        if (err.name === 'OverconstrainedError') {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true })
+        } else {
+          throw err
+        }
+      }
       streamRef.current = stream
 
       // Wait for DOM
@@ -122,22 +157,19 @@ export default function BarcodeScanner({ onScan, onClose }) {
         videoRef.current.srcObject = stream
         await videoRef.current.play()
         setIsScanning(true)
-        setCameraLoading(false)
         // Start scanning loop
         animFrameRef.current = requestAnimationFrame(scanFrame)
       }
     } catch (err) {
       console.error('Camera error:', err)
       setIsScanning(false)
-      setCameraLoading(false)
       setMode('manual')
-      if (err.name === 'NotAllowedError') {
-        setCameraError('Camera permission denied. Please allow camera access in your browser settings.')
-      } else if (err.name === 'NotFoundError') {
-        setCameraError('No camera found on this device.')
-      } else {
-        setCameraError(err.message || 'Could not access camera')
-      }
+      setCameraError(cameraErrorMessage(err, permissionState))
+    } finally {
+      // Always clear the spinner. Previously this only ran on success, so a
+      // failure with no <video> mounted left 'Starting camera...' stuck and
+      // the Camera tab permanently disabled (no retry possible).
+      setCameraLoading(false)
     }
   }
 
@@ -160,7 +192,7 @@ export default function BarcodeScanner({ onScan, onClose }) {
   const switchToManual = () => {
     stopCamera()
     setMode('manual')
-    setCameraError('')
+    setCameraError(null)
   }
 
   const switchToCamera = () => {
@@ -240,13 +272,25 @@ className="p-2 rounded-lg bg-surface-hover"
 
         {/* Scanner Content */}
         <div className="p-4">
+          {/* Camera failure — rendered OUTSIDE the mode branches so it is
+              visible in camera mode too, with a one-tap retry (the fix for
+              a remembered denial: unblock in the address bar, then retry
+              without closing the modal). */}
+          {cameraError && (
+            <div role="alert" className="mb-4 p-3 bg-danger-soft rounded-lg space-y-3">
+              <p className="text-sm text-danger">{t(cameraError.key)}</p>
+              <button
+                onClick={startCamera}
+                disabled={cameraLoading}
+                className="w-full flex items-center justify-center gap-2 py-2.5 bg-surface text-foreground rounded-lg font-medium hover:bg-surface-hover disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {cameraLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                {t('scanner.retry')}
+              </button>
+            </div>
+          )}
           {mode === 'manual' ? (
             <form onSubmit={handleManualSubmit} className="space-y-4">
-              {cameraError && (
-<div className="p-3 bg-danger-soft rounded-lg">
-<p className="text-sm text-danger">{cameraError}</p>
-                </div>
-              )}
               <div>
 <label className="block text-sm font-medium text-foreground mb-2">
                   {t('scanner.enterBarcode')}
@@ -292,7 +336,7 @@ className="w-full py-3 bg-accent text-white rounded-lg font-semibold hover:bg-pr
               {cameraLoading && (
 <div className="flex items-center justify-center gap-2 text-muted">
                   <Loader2 className="w-5 h-5 animate-spin" />
-                  <p className="text-sm">Starting camera...</p>
+                  <p className="text-sm">{t('scanner.startingCamera')}</p>
                 </div>
               )}
               {isScanning && (
