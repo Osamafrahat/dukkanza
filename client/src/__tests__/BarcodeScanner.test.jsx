@@ -49,6 +49,7 @@ afterEach(() => {
   delete window.BarcodeDetector
   delete window.navigator.mediaDevices
   delete window.navigator.permissions
+  delete window.navigator.userAgent
   stubReadyVideo()
 })
 
@@ -137,11 +138,43 @@ describe('BarcodeScanner camera permission', () => {
     expect(utils.getByRole('alert')).toBeTruthy()
     // Actionable next step, not just "check your browser settings".
     expect(utils.getByRole('button', { name: /Retry/ })).toBeTruthy()
+    // Concrete platform steps (jsdom's UA is desktop) — queried as list
+    // items because the <ol> itself also contains the step text.
+    const steps = utils.getAllByRole('listitem')
+    expect(steps).toHaveLength(1)
+    expect(steps[0].textContent).toContain('Click the camera icon in the address bar')
     // Fell back to manual entry so the user is never stuck on a dead view.
     expect(utils.getByText('Enter barcode manually')).toBeTruthy()
     // The spinner cleared, so the Camera tab is usable again.
     expect(utils.getByRole('button', { name: /^Camera$/ }).disabled).toBe(false)
-  })
+  }, 15000)
+
+  it('shows Android-specific unblock steps on a phone', async () => {
+    // Android Chrome has NO camera icon in the address bar, so desktop
+    // wording would send the user hunting for something that isn't there —
+    // this is the reported mobile case.
+    Object.defineProperty(window.navigator, 'userAgent', {
+      value: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+      configurable: true,
+    })
+    const getUserMedia = vi.fn().mockRejectedValue(notAllowed())
+    stubCamera({ getUserMedia, state: 'denied' })
+
+    const utils = renderScanner()
+    clickCameraTab(utils)
+
+    await waitFor(() =>
+      expect(utils.getByText(/Camera is blocked for this site/)).toBeTruthy()
+    )
+    const steps = utils.getAllByRole('listitem')
+    expect(steps).toHaveLength(2)
+    expect(steps[0].textContent).toContain('Tap the lock icon beside the address bar')
+    expect(steps[0].textContent).toContain('Site settings → Camera')
+    expect(steps[1].textContent).toContain('Chrome ⋮')
+    // Desktop wording must not leak onto a phone.
+    expect(steps[0].textContent).not.toContain('Click the camera icon')
+    expect(utils.getByRole('button', { name: /Retry/ })).toBeTruthy()
+  }, 15000)
 
   it('shows the prompt-denial message when the user just declined the prompt', async () => {
     const getUserMedia = vi.fn().mockRejectedValue(notAllowed())

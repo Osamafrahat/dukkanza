@@ -1,7 +1,7 @@
 import { X, Camera, Keyboard, Check, Loader2, RefreshCw } from 'lucide-react'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAppStore } from '../../stores/appStore'
-import { cameraErrorMessage, waitForVideoReady } from '../../lib/camera'
+import { cameraErrorMessage, waitForVideoReady, cameraFixSteps } from '../../lib/camera'
 
 export default function BarcodeScanner({ onScan, onClose }) {
   const { t } = useAppStore()
@@ -303,7 +303,7 @@ export default function BarcodeScanner({ onScan, onClose }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-<div className={`bg-surface rounded-2xl w-full max-w-md mx-4 shadow-2xl transition-all ${flash ?'ring-4 ring-green-400':''}`}>
+<div className={`bg-surface rounded-2xl w-full max-w-md mx-4 shadow-2xl transition-all max-h-[90vh] overflow-y-auto ${flash ?'ring-4 ring-green-400':''}`}>
         {/* Header */}
 <div className="flex items-center justify-between p-4 border-b border-border">
           <div className="flex items-center gap-3">
@@ -380,6 +380,16 @@ className="p-2 rounded-lg bg-surface-hover"
           {cameraError && (
             <div role="alert" className="mb-4 p-3 bg-danger-soft rounded-lg space-y-3">
               <p className="text-sm text-danger">{t(cameraError.key)}</p>
+              {/* A denial is never re-prompted, so the user must be walked
+                  through their own browser settings — steps differ per
+                  platform (Android Chrome has no camera icon in the bar). */}
+              {cameraError.key === 'scanner.permissionBlocked' && (
+                <ol className="list-decimal ps-4 space-y-1.5 text-xs text-danger">
+                  {cameraFixSteps().map(key => (
+                    <li key={key}>{t(key)}</li>
+                  ))}
+                </ol>
+              )}
               <button
                 onClick={startCamera}
                 disabled={cameraLoading}

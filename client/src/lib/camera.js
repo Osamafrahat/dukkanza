@@ -31,6 +31,29 @@ export function waitForVideoReady(video, timeoutMs = cameraTiming.videoReadyTime
 }
 
 /**
+ * Which set of unblock instructions to show for a blocked camera.
+ *
+ * The permission prompt NEVER re-appears after a denial (browser rule), so
+ * the user has to be walked through their own browser settings — and those
+ * differ per platform. Android Chrome in particular has no camera icon in
+ * the address bar, so desktop wording is useless there.
+ */
+export function cameraPlatform() {
+  if (typeof navigator === 'undefined') return 'desktop'
+  const ua = navigator.userAgent || ''
+  if (/iPhone|iPad|iPod/i.test(ua)) return 'ios'
+  if (/Android/i.test(ua)) return 'android'
+  return 'desktop'
+}
+
+/** Translation keys with concrete, platform-correct unblock steps. */
+export function cameraFixSteps(platform = cameraPlatform()) {
+  if (platform === 'android') return ['scanner.fixAndroid1', 'scanner.fixAndroid2']
+  if (platform === 'ios') return ['scanner.fixIOS1', 'scanner.fixIOS2']
+  return ['scanner.fixDesktop']
+}
+
+/**
  * Map a getUserMedia failure to a translation key.
  *
  * `permissionState` is the Permissions API state captured BEFORE the
