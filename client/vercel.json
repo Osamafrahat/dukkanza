@@ -10,7 +10,7 @@
         { "key": "X-Frame-Options", "value": "DENY" },
         { "key": "X-XSS-Protection", "value": "1; mode=block" },
         { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
-        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=(), payment=()" },
+        { "key": "Permissions-Policy", "value": "camera=(self), geolocation=(self), microphone=(), payment=()" },
         { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://erp-go-crimson-wind-2087.fly.dev https://*.supabase.co wss://*.supabase.co https://*.sentry.io; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://consent.youtube.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; manifest-src 'self'" }
       ]
     }
