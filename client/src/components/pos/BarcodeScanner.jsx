@@ -1,7 +1,7 @@
 import { X, Camera, Keyboard, Check, Loader2, RefreshCw } from 'lucide-react'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAppStore } from '../../stores/appStore'
-import { cameraErrorMessage } from '../../lib/camera'
+import { cameraErrorMessage, waitForVideoReady } from '../../lib/camera'
 
 export default function BarcodeScanner({ onScan, onClose }) {
   const { t } = useAppStore()
@@ -19,10 +19,11 @@ export default function BarcodeScanner({ onScan, onClose }) {
   const inputRef = useRef(null)
   const videoRef = useRef(null)
   const streamRef = useRef(null)
-  const animFrameRef = useRef(null)
   const lastScanRef = useRef('')
   const lastScanTimeRef = useRef(0)
   const detectorRef = useRef(null)
+  // Guards the native→zxing handover against firing twice.
+  const swappingRef = useRef(false)
 
   useEffect(() => {
     if (mode === 'manual') {
@@ -60,23 +61,131 @@ export default function BarcodeScanner({ onScan, onClose }) {
     }
   }
 
-  const scanFrame = useCallback(() => {
-    if (!videoRef.current || !detectorRef.current || videoRef.current.readyState < 2) {
-      animFrameRef.current = requestAnimationFrame(scanFrame)
-      return
-    }
-
-    detectorRef.current.detectFromVideo(videoRef.current).then(barcodes => {
-      if (barcodes.length > 0) {
-        const barcode = barcodes[0].rawValue
-        if (barcode) {
-          handleScanResult(barcode)
-        }
-      }
-    }).catch(() => {})
-
-    animFrameRef.current = requestAnimationFrame(scanFrame)
+  // The detection loops outlive the render that created them (rAF, or
+  // zxing's own timer), so they must call the CURRENT handler: onScan is a
+  // fresh function on every POSPage render and a stale one would scan
+  // against outdated cart state.
+  const handleScanResultRef = useRef(handleScanResult)
+  useEffect(() => {
+    handleScanResultRef.current = handleScanResult
   }, [handleScanResult])
+
+  // --- Detector factories -------------------------------------------------
+  // Both shapes are { kind, start(video), stop() } and both deliver results
+  // through handleScanResultRef. stopCamera() tears them down via stop().
+
+  const makeNativeDetector = (detector, onUnavailable) => {
+    let rafId = null
+    let running = false
+    return {
+      kind: 'native',
+      start(video) {
+        running = true
+        // First attempt runs immediately — no frame of grace — so a broken
+        // detection service is handed to zxing right away instead of after
+        // a rAF. Every later attempt is throttled to one per frame.
+        const tick = async () => {
+          if (!running) return
+          try {
+            const codes = await detector.detect(video)
+            const code = codes && codes[0] && codes[0].rawValue
+            if (code && running) handleScanResultRef.current(code)
+          } catch (err) {
+            // Windows/Linux Chrome exposes the BarcodeDetector interface
+            // but ships no detection service, so detect() rejects on every
+            // frame. The old `.catch(() => {})` swallowed that forever and
+            // scanning silently did nothing — hand over to zxing instead.
+            if (running) onUnavailable(err)
+            return
+          }
+          if (running) rafId = requestAnimationFrame(tick)
+        }
+        tick()
+      },
+      stop() {
+        running = false
+        if (rafId) cancelAnimationFrame(rafId)
+        rafId = null
+      },
+    }
+  }
+
+  const makeZxingDetector = async () => {
+    const { BrowserMultiFormatReader } = await import('@zxing/library')
+    const reader = new BrowserMultiFormatReader()
+    // Misses retry at 0ms by default — a hot loop that pegs a core while
+    // nothing is in frame. 100ms is plenty for a POS scan.
+    reader.timeBetweenDecodingAttempts = 100
+    return {
+      kind: 'zxing',
+      start(video) {
+        // Decode from the stream we ALREADY own. The old code called
+        // decodeOnceFromVideoDevice() on every animation frame, and that
+        // API calls getUserMedia() itself (reset → new constraints → brand
+        // new stream), restarting the camera ~60×/s so decoding never got a
+        // stable frame. This variant reads the existing element only.
+        reader.decodeContinuously(video, (result) => {
+          const code = result && typeof result.getText === 'function' ? result.getText() : null
+          if (code) handleScanResultRef.current(code)
+        })
+      },
+      stop() {
+        // reset() → stopContinuousDecode() ends the loop; this.stream stays
+        // undefined because we own the stream, so our tracks survive.
+        try { reader.reset() } catch { /* already stopped */ }
+      },
+    }
+  }
+
+  // Native path is only trusted when the browser both exposes the API and
+  // reports our primary symbology: Chrome has made BarcodeDetector visible
+  // on every platform since v83 while supporting it on Android/ChromeOS/
+  // macOS only, so mere visibility proves nothing.
+  const createDetector = async (onNativeUnavailable) => {
+    if ('BarcodeDetector' in window) {
+      try {
+        const wanted = ['code_128', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_39', 'qr_code']
+        let formats = wanted
+        if (typeof BarcodeDetector.getSupportedFormats === 'function') {
+          const supported = await BarcodeDetector.getSupportedFormats()
+          formats = wanted.filter(f => supported && supported[f])
+        }
+        // Labels print Code 128 (see pickBarcodeFormat), so a native
+        // detector without it would return [] forever — use zxing instead.
+        if (formats.includes('code_128')) {
+          return makeNativeDetector(new BarcodeDetector({ formats }), onNativeUnavailable)
+        }
+        console.warn('BarcodeScanner: native detector lacks code_128, using zxing')
+      } catch (err) {
+        // getSupportedFormats() rejects where no detection service exists
+        // (Windows/Linux Chrome), and construction can fail too.
+        console.warn('BarcodeScanner: native detector unavailable, using zxing:', err)
+      }
+    }
+    return makeZxingDetector()
+  }
+
+  // Called when the native detector fails at runtime: swap to zxing without
+  // touching the camera stream (the preview keeps running throughout).
+  const swapToZxing = async (reason) => {
+    const video = videoRef.current
+    if (!video || swappingRef.current || detectorRef.current?.kind === 'zxing') return
+    swappingRef.current = true
+    try {
+      detectorRef.current?.stop()
+      const fallback = await makeZxingDetector()
+      detectorRef.current = fallback
+      fallback.start(video)
+      console.warn('BarcodeScanner: native detector failed at runtime, switched to zxing:', reason)
+    } catch (err) {
+      console.error('BarcodeScanner: zxing fallback failed:', err)
+      stopCamera()
+      setMode('manual')
+      setCameraError({ key: 'scanner.cameraError' })
+    } finally {
+      swappingRef.current = false
+    }
+  }
 
   const startCamera = async () => {
     setCameraLoading(true)
@@ -105,34 +214,6 @@ export default function BarcodeScanner({ onScan, onClose }) {
     }
 
     try {
-      // Check if BarcodeDetector is natively supported, otherwise use @zxing/library
-      let useNative = 'BarcodeDetector' in window
-
-      if (useNative) {
-        // Try native BarcodeDetector
-        try {
-          const detector = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'qr_code'] })
-          detectorRef.current = { detectFromVideo: (video) => detector.detect(video) }
-        } catch (e) {
-          useNative = false
-        }
-      }
-
-      if (!useNative) {
-        const { BrowserMultiFormatReader } = await import('@zxing/library')
-        const reader = new BrowserMultiFormatReader()
-        detectorRef.current = {
-          detectFromVideo: async (video) => {
-            try {
-              const result = await reader.decodeOnceFromVideoDevice(undefined, video)
-              return result ? [{ rawValue: result.getText() }] : []
-            } catch (e) {
-              return []
-            }
-          }
-        }
-      }
-
       // Get camera stream. Prefer the rear camera, but retry with any
       // camera if the device rejects that constraint (desktops/webcams
       // often have no 'environment' camera and would otherwise fail).
@@ -150,19 +231,35 @@ export default function BarcodeScanner({ onScan, onClose }) {
       }
       streamRef.current = stream
 
+      // Build the detector once, against the stream we now own.
+      const detector = await createDetector(swapToZxing)
+      detectorRef.current = detector
+
       // Wait for DOM
       await new Promise(resolve => setTimeout(resolve, 100))
 
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        await videoRef.current.play()
-        setIsScanning(true)
-        // Start scanning loop
-        animFrameRef.current = requestAnimationFrame(scanFrame)
+      const video = videoRef.current
+      if (!video) throw new Error('scanner video element not mounted')
+
+      video.srcObject = stream
+      await video.play()
+
+      // zxing paints frames to a canvas; starting before the video has
+      // frames and dimensions throws and kills its loop for good.
+      if (!(await waitForVideoReady(video))) {
+        stopCamera()
+        setMode('manual')
+        setCameraError({ key: 'scanner.videoNotReady' })
+        return
       }
+
+      detector.start(video)
+      setIsScanning(true)
     } catch (err) {
       console.error('Camera error:', err)
-      setIsScanning(false)
+      // Release the camera on every failure path — a late failure could
+      // otherwise leave the preview stream running with no scanner.
+      stopCamera()
       setMode('manual')
       setCameraError(cameraErrorMessage(err, permissionState))
     } finally {
@@ -174,10 +271,15 @@ export default function BarcodeScanner({ onScan, onClose }) {
   }
 
   const stopCamera = () => {
-    if (animFrameRef.current) {
-      cancelAnimationFrame(animFrameRef.current)
-      animFrameRef.current = null
+    // Stop the ACTIVE detector first: for native that cancels its rAF, for
+    // zxing it ends the decode loop. Nulling without stopping would leave
+    // zxing's timer running after the modal closes.
+    try {
+      detectorRef.current?.stop()
+    } catch (err) {
+      console.warn('BarcodeScanner: detector stop failed:', err)
     }
+    detectorRef.current = null
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop())
       streamRef.current = null
@@ -185,7 +287,6 @@ export default function BarcodeScanner({ onScan, onClose }) {
     if (videoRef.current) {
       videoRef.current.srcObject = null
     }
-    detectorRef.current = null
     setIsScanning(false)
   }
 

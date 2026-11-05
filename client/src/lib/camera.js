@@ -1,6 +1,36 @@
 // Camera failure messages for the POS barcode scanner.
 
 /**
+ * Timing knobs, exported so tests can shrink them instead of waiting out
+ * real timeouts (RTL's waitFor cannot drive vitest's fake timers — it
+ * looks for a `jest` global that does not exist here).
+ */
+export const cameraTiming = {
+  /** How long the <video> may take to produce decodable frames. */
+  videoReadyTimeoutMs: 5000,
+}
+
+/**
+ * Wait until the <video> actually has decodable frames (readyState and real
+ * dimensions). zxing paints frames onto a canvas; starting before that
+ * throws InvalidStateError, which kills its decode loop permanently —
+ * another way to end up with a live preview that never scans.
+ *
+ * Resolves true when ready, false on timeout.
+ */
+export function waitForVideoReady(video, timeoutMs = cameraTiming.videoReadyTimeoutMs) {
+  return new Promise(resolve => {
+    const startedAt = Date.now()
+    const check = () => {
+      if (video.readyState >= 2 && video.videoWidth > 0) return resolve(true)
+      if (Date.now() - startedAt >= timeoutMs) return resolve(false)
+      setTimeout(check, 100)
+    }
+    check()
+  })
+}
+
+/**
  * Map a getUserMedia failure to a translation key.
  *
  * `permissionState` is the Permissions API state captured BEFORE the
