@@ -3,9 +3,9 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAppStore } from '../../stores/appStore'
 import { cameraErrorMessage, waitForVideoReady, cameraFixSteps } from '../../lib/camera'
 
-export default function BarcodeScanner({ onScan, onClose }) {
+export default function BarcodeScanner({ onScan, onClose, initialMode = 'manual' }) {
   const { t } = useAppStore()
-  const [mode, setMode] = useState('manual')
+  const [mode, setMode] = useState(initialMode)
   const [manualInput, setManualInput] = useState('')
   const [isScanning, setIsScanning] = useState(false)
   const [cameraLoading, setCameraLoading] = useState(false)
@@ -24,6 +24,11 @@ export default function BarcodeScanner({ onScan, onClose }) {
   const detectorRef = useRef(null)
   // Guards the native→zxing handover against firing twice.
   const swappingRef = useRef(false)
+  // startCamera/stopCamera race: the modal can be closed while getUserMedia
+  // or the detector build is still in flight (auto-started camera).
+  // stopCamera() runs first and clears the refs, so startCamera must notice
+  // it lost ownership instead of leaving a live stream with no UI attached.
+  const activeRef = useRef(false)
 
   useEffect(() => {
     if (mode === 'manual') {
@@ -35,6 +40,14 @@ export default function BarcodeScanner({ onScan, onClose }) {
     return () => {
       stopCamera()
     }
+  }, [])
+
+  // Opened straight into camera mode (e.g. the subscription check desk):
+  // begin acquiring on mount. Waiting for a second tap on the Camera tab
+  // would make the trigger button feel broken.
+  useEffect(() => {
+    if (initialMode === 'camera') startCamera()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only by design: the INITIAL mode decides; later tab switches call startCamera themselves
   }, [])
 
   const handleScanResult = useCallback(async (barcode) => {
@@ -208,6 +221,7 @@ export default function BarcodeScanner({ onScan, onClose }) {
   }
 
   const startCamera = async () => {
+    activeRef.current = true
     setCameraLoading(true)
     setCameraError(null)
     setMode('camera')
@@ -249,6 +263,13 @@ export default function BarcodeScanner({ onScan, onClose }) {
           throw err
         }
       }
+      // The modal may have been closed while the prompt/getUserMedia was in
+      // flight — stopCamera() already ran and cleared the refs, so release
+      // this stream ourselves or the camera light stays on with no UI.
+      if (!activeRef.current) {
+        stream.getTracks().forEach(track => track.stop())
+        return
+      }
       streamRef.current = stream
 
       // Build the detector once, against the stream we now own.
@@ -257,6 +278,13 @@ export default function BarcodeScanner({ onScan, onClose }) {
 
       // Wait for DOM
       await new Promise(resolve => setTimeout(resolve, 100))
+
+      if (!activeRef.current) {
+        // Closed during the detector build/wait — same leak, second window.
+        detectorRef.current = null
+        stream.getTracks().forEach(track => track.stop())
+        return
+      }
 
       const video = videoRef.current
       if (!video) throw new Error('scanner video element not mounted')
@@ -291,6 +319,8 @@ export default function BarcodeScanner({ onScan, onClose }) {
   }
 
   const stopCamera = () => {
+    // Any start still in flight has lost ownership — see activeRef.
+    activeRef.current = false
     // Stop the ACTIVE detector first: for native that cancels its rAF, for
     // zxing it ends the decode loop. Nulling without stopping would leave
     // zxing's timer running after the modal closes.

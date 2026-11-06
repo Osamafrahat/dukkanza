@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeft, ScanBarcode, Search, BadgeCheck, XCircle } from 'lucide-react'
+import { ArrowLeft, ScanBarcode, Search, BadgeCheck, XCircle, Camera } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import { subscriptionsApi } from '../lib/api'
 import { parseSubscriptionBarcode, isSubscriptionValid } from '../lib/subscriptions'
+import BarcodeScanner from '../components/pos/BarcodeScanner'
 
 // Stored status labels — same mapping the subscriptions table uses.
 const STATUS_LABEL_KEYS = {
@@ -24,39 +25,49 @@ export default function SubscriptionCheckPage() {
   const [found, setFound] = useState(null)
   // { kind: 'invalid' | 'notfound' | 'error', code?, message? }
   const [failure, setFailure] = useState(null)
+  const [showScanner, setShowScanner] = useState(false)
   const inputRef = useRef(null)
 
   const focusInput = () => inputRef.current?.focus()
 
   useEffect(() => { focusInput() }, [])
 
-  const check = async (e) => {
-    e.preventDefault()
-    if (loading) return
+  // Shared by the typed form and the camera modal: look up one code and
+  // render the verdict. Returns the short label the scanner modal displays
+  // under its flash, so the operator can read the result WITHOUT closing
+  // the modal and keep scanning the next barcode.
+  const runCheck = async (raw) => {
+    if (loading) return ''
 
-    const id = parseSubscriptionBarcode(query)
+    const attempted = String(raw ?? '').trim()
+    const id = parseSubscriptionBarcode(attempted)
     if (!id) {
       // Nothing to ask the server about; keep the typed text so a manual
-      // typo can be corrected.
+      // typo can be corrected (a camera scan has nothing to keep).
       setFound(null)
       setFailure({ kind: 'invalid' })
       focusInput()
-      return
+      return t('services.invalidBarcode') || 'Invalid subscription barcode'
     }
 
-    const attempted = query.trim()
     setLoading(true)
     setFailure(null)
     setFound(null)
     try {
       const res = await subscriptionsApi.getById(id)
       setFound(res.data)
+      // Verdict is computed, not read from status — same as the card.
+      return isSubscriptionValid(res.data)
+        ? (t('services.valid') || 'Valid')
+        : (t('services.statusExpired') || 'Expired')
     } catch (err) {
       if (err.response?.status === 404) {
         setFailure({ kind: 'notfound', code: attempted })
-      } else {
-        setFailure({ kind: 'error', message: err.response?.data?.error || t('common.error') || 'Error' })
+        return t('services.notFoundFor', { code: attempted }) || `No subscription found for ${attempted}`
       }
+      const message = err.response?.data?.error || t('common.error') || 'Error'
+      setFailure({ kind: 'error', message })
+      return message
     } finally {
       setLoading(false)
       // Clear and refocus: ready for the very next scan.
@@ -64,6 +75,15 @@ export default function SubscriptionCheckPage() {
       focusInput()
     }
   }
+
+  const check = (e) => {
+    e.preventDefault()
+    runCheck(query)
+  }
+
+  // Camera modal → the same lookup; the returned label is what the modal
+  // shows after the flash.
+  const handleCameraScan = (barcode) => runCheck(barcode)
 
   const valid = isSubscriptionValid(found)
 
@@ -97,6 +117,15 @@ className="p-2 rounded-lg bg-surface-tertiary text-muted hover:text-foreground"
             className="w-full pl-10 pr-3 py-3 rounded-lg border border-border bg-surface text-lg font-mono"
           />
         </div>
+        <button
+          type="button"
+          onClick={() => setShowScanner(true)}
+          title={t('services.scanWithCamera') || 'Scan with camera'}
+          aria-label={t('services.scanWithCamera') || 'Scan with camera'}
+          className="flex items-center justify-center px-4 py-3 rounded-lg border border-border bg-surface-tertiary text-foreground hover:bg-surface-hover"
+        >
+          <Camera className="w-5 h-5" />
+        </button>
         <button
           type="submit"
           disabled={loading}
@@ -160,6 +189,20 @@ className="p-2 rounded-lg bg-surface-tertiary text-muted hover:text-foreground"
             </div>
           </dl>
         </div>
+      )}
+
+      {/* Camera check — reuses the POS scanner and opens straight into
+          camera mode so one tap starts scanning. The verdict comes back as
+          the modal's label; the full card renders behind it. */}
+      {showScanner && (
+        <BarcodeScanner
+          initialMode="camera"
+          onScan={handleCameraScan}
+          onClose={() => {
+            setShowScanner(false)
+            focusInput()
+          }}
+        />
       )}
     </div>
   )

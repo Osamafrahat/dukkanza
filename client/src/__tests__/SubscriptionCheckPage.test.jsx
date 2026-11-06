@@ -105,4 +105,45 @@ describe('SubscriptionCheckPage', () => {
     await waitFor(() => expect(utils.getByText('Valid')).toBeTruthy())
     expect(subscriptionsApi.getById).toHaveBeenCalledWith(42)
   })
+
+  it('opens the camera scanner directly in camera mode', async () => {
+    const utils = renderPage()
+    fireEvent.click(utils.getByRole('button', { name: 'Scan with camera' }))
+
+    // jsdom has no mediaDevices (like plain HTTP): the modal explains that
+    // instead of hanging, and lands on its manual tab.
+    await waitFor(() =>
+      expect(utils.getByText('Camera access needs a secure (HTTPS) connection.')).toBeTruthy()
+    )
+    expect(utils.getByPlaceholderText('Type or paste barcode...')).toBeTruthy()
+  })
+
+  it('runs the check for a barcode submitted through the camera modal', async () => {
+    subscriptionsApi.getById.mockResolvedValue({ data: activeSub })
+
+    const utils = renderPage()
+    fireEvent.click(utils.getByRole('button', { name: 'Scan with camera' }))
+    const modalInput = await utils.findByPlaceholderText('Type or paste barcode...')
+    fireEvent.change(modalInput, { target: { value: 'SUB-42' } })
+    fireEvent.click(utils.getByRole('button', { name: /^Add/ }))
+
+    await waitFor(() => expect(subscriptionsApi.getById).toHaveBeenCalledWith(42))
+    // The verdict shows in BOTH places: the modal label (returned by onScan)
+    // and the full card behind it — exactly two occurrences of 'Valid'.
+    await waitFor(() => expect(utils.getAllByText('Valid')).toHaveLength(2))
+  })
+
+  it('surfaces an invalid code inside the camera modal without an API call', async () => {
+    const utils = renderPage()
+    fireEvent.click(utils.getByRole('button', { name: 'Scan with camera' }))
+    const modalInput = await utils.findByPlaceholderText('Type or paste barcode...')
+    fireEvent.change(modalInput, { target: { value: 'GARBAGE' } })
+    fireEvent.click(utils.getByRole('button', { name: /^Add/ }))
+
+    // Page failure card + modal label, same wording — two occurrences.
+    await waitFor(() =>
+      expect(utils.getAllByText('Invalid subscription barcode')).toHaveLength(2)
+    )
+    expect(subscriptionsApi.getById).not.toHaveBeenCalled()
+  })
 })
