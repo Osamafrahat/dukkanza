@@ -245,36 +245,94 @@ export default function POSPage() {
     setSearchQuery(e.target.value)
   }
 
-  const handleBarcodeScan = async (barcode) => {
-    if (navigator.onLine) {
-      try {
-        const response = await productsApi.getByBarcode(barcode)
-        if (response.data) {
-          const added = addItem(response.data)
-          if (!added) {
-            if (response.data.stock_quantity <= 0) {
-              toastError(t('pos.outOfStock') || 'Out of stock')
-            } else {
-              toastError(`${t('pos.insufficientStock') || 'Insufficient stock'} (${t('inventory.inStock')}: ${response.data.stock_quantity})`)
-            }
-          }
-          return response.data.name
-        }
-      } catch (err) {
-        console.error('Product not found online:', barcode, err)
-      }
+  // Server lookup for a barcode — the source of truth when the local list
+  // does not hold the product (GET /products returns only the first
+  // 100/page) and when local stock says no but the list may be stale.
+  // Returns the product or null; never throws (offline included).
+  const fetchProductByBarcode = async (barcode) => {
+    if (!navigator.onLine) return null
+    try {
+      const response = await productsApi.getByBarcode(barcode)
+      return response.data || null
+    } catch (err) {
+      console.error('Product lookup failed:', barcode, err)
+      return null
     }
+  }
+
+  // Merge a fresher server record into the stored list (matched by id) so
+  // the NEXT scan validates against current stock. Reads the store's CURRENT
+  // state — this runs long after the render whose `products` it would
+  // otherwise overwrite.
+  const mergeFreshProduct = (fresh) => {
+    const { products: current, setProducts: setList } = useProductStore.getState()
+    if (!current.some(p => p.id === fresh.id)) return
+    setList(current.map(p => (p.id === fresh.id ? { ...p, ...fresh } : p)))
+  }
+
+  const handleBarcodeScan = async (barcode) => {
+    if (!barcode) return null
+
+    // Local-first: the product list was loaded WITH the branch-stock
+    // overlay and is re-fetched after every sale, so a barcode it knows can
+    // go straight into the cart. Blocking on GET /products/barcode/:barcode
+    // (Vercel → Fly → Supabase, plus that route's own stock-overlay query)
+    // before the cart updated is what made camera scanning feel slow — the
+    // round trip now only happens where it adds information.
     const localProduct = products.find(p => p.barcode === barcode)
     if (localProduct) {
       const added = addItem(localProduct)
-      if (!added) {
-        if (localProduct.stock_quantity <= 0) {
+      if (added) {
+        // Advisory freshness check, OFF the critical path: another till may
+        // have sold the last unit since this list loaded. Warn if the server
+        // says it is gone, and store the fresh numbers either way.
+        fetchProductByBarcode(barcode).then(fresh => {
+          if (!fresh || fresh.id !== localProduct.id) return
+          if (fresh.stock_quantity !== localProduct.stock_quantity) {
+            mergeFreshProduct(fresh)
+            if (fresh.stock_quantity <= 0) {
+              toastError(t('pos.outOfStock') || 'Out of stock')
+            }
+          }
+        })
+        return localProduct.name
+      }
+
+      // Local stock rejected the add — but the list can lag (receiving on
+      // another device, a till that was offline). Verify against the server
+      // before telling the cashier "no"; only a real rejection toasts.
+      const fresh = await fetchProductByBarcode(barcode)
+      if (fresh) {
+        if (fresh.id === localProduct.id) mergeFreshProduct(fresh)
+        if (addItem(fresh)) return fresh.name
+        if (fresh.stock_quantity <= 0) {
           toastError(t('pos.outOfStock') || 'Out of stock')
         } else {
-          toastError(`${t('pos.insufficientStock') || 'Insufficient stock'} (${t('inventory.inStock')}: ${localProduct.stock_quantity})`)
+          toastError(`${t('pos.insufficientStock') || 'Insufficient stock'} (${t('inventory.inStock')}: ${fresh.stock_quantity})`)
         }
+        return fresh.name
+      }
+      if (localProduct.stock_quantity <= 0) {
+        toastError(t('pos.outOfStock') || 'Out of stock')
+      } else {
+        toastError(`${t('pos.insufficientStock') || 'Insufficient stock'} (${t('inventory.inStock')}: ${localProduct.stock_quantity})`)
       }
       return localProduct.name
+    }
+
+    // Not in the local list at all — ask the server (it may hold barcodes
+    // beyond the first page). Same path as before.
+    const product = await fetchProductByBarcode(barcode)
+    if (product) {
+      const added = addItem(product)
+      if (!added) {
+        if (product.stock_quantity <= 0) {
+          toastError(t('pos.outOfStock') || 'Out of stock')
+        } else {
+          toastError(`${t('pos.insufficientStock') || 'Insufficient stock'} (${t('inventory.inStock')}: ${product.stock_quantity})`)
+        }
+      }
+      return product.name
     }
     console.error('Product not found:', barcode)
     return null

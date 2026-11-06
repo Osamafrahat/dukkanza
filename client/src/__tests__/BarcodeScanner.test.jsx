@@ -4,6 +4,26 @@ import { render, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { cameraErrorMessage, cameraTiming } from '../lib/camera'
 import BarcodeScanner from '../components/pos/BarcodeScanner'
 
+// Capture how the scanner constructs its zxing reader WITHOUT changing its
+// behaviour: the double extends the real class, so every existing test still
+// runs the real decode loop. vi.hoisted because vi.mock is hoisted above
+// regular top-level declarations; the factory only executes when the
+// component dynamically imports @zxing/library (during a test).
+const zxingCtorCalls = vi.hoisted(() => [])
+
+vi.mock('@zxing/library', async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    BrowserMultiFormatReader: class extends actual.BrowserMultiFormatReader {
+      constructor(...args) {
+        super(...args)
+        zxingCtorCalls.push(args)
+      }
+    },
+  }
+})
+
 // jsdom's <video> never becomes playable, so waitForVideoReady() would
 // always time out. Make videos look ready; the no-picture test overrides
 // these back to 0 and afterEach restores them.
@@ -349,5 +369,45 @@ describe('BarcodeScanner detection', () => {
     expect(utils.queryByText('Point camera at barcode...')).toBe(null)
     // The camera was released rather than left running behind an error.
     expect(utils.getByText('Enter barcode manually')).toBeTruthy()
+  }, 15000)
+
+  it('builds zxing with POSSIBLE_FORMATS hints and a short post-scan pause', async () => {
+    // Perf guards for "camera scanning is too slow":
+    //  1. Without a POSSIBLE_FORMATS hint, zxing's MultiFormatReader runs 7
+    //     top-level readers (QR, DataMatrix, Aztec, PDF417, MaxiCode + 1-D)
+    //     against EVERY frame — the main reason recognition lagged. Only the
+    //     symbologies we actually print/scan may be in the list.
+    //  2. zxing pauses 500ms (default) after every SUCCESSFUL decode before
+    //     looking at the next frame — dead air between consecutive items.
+    // No BarcodeDetector in this test, so the camera tab takes the zxing path.
+    delete window.BarcodeDetector
+    zxingCtorCalls.length = 0
+    const getUserMedia = vi.fn().mockResolvedValue(fakeStream())
+    stubCamera({ getUserMedia })
+
+    const utils = renderScanner()
+    clickCameraTab(utils)
+    await waitFor(
+      () => expect(utils.getByText('Point camera at barcode...')).toBeTruthy(),
+      { timeout: 5000 }
+    )
+
+    expect(zxingCtorCalls.length).toBeGreaterThan(0)
+    const [hints, timeBetweenScans] = zxingCtorCalls[zxingCtorCalls.length - 1]
+    const { DecodeHintType, BarcodeFormat } = await import('@zxing/library')
+    const formats = hints.get(DecodeHintType.POSSIBLE_FORMATS)
+
+    expect(Array.isArray(formats)).toBe(true)
+    // Our printed labels (pickBarcodeFormat) and retail goods.
+    expect(formats).toContain(BarcodeFormat.CODE_128)
+    expect(formats).toContain(BarcodeFormat.EAN_13)
+    // Readers we never scan must not run per frame.
+    expect(formats).not.toContain(BarcodeFormat.DATA_MATRIX)
+    expect(formats).not.toContain(BarcodeFormat.AZTEC)
+    expect(formats).not.toContain(BarcodeFormat.PDF_417)
+    expect(formats).not.toContain(BarcodeFormat.MAXICODE)
+    expect(formats.length).toBeLessThanOrEqual(7)
+    // Below zxing's 500ms default post-success pause.
+    expect(timeBetweenScans).toBeLessThan(500)
   }, 15000)
 })

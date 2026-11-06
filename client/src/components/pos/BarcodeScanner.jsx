@@ -111,8 +111,28 @@ export default function BarcodeScanner({ onScan, onClose }) {
   }
 
   const makeZxingDetector = async () => {
-    const { BrowserMultiFormatReader } = await import('@zxing/library')
-    const reader = new BrowserMultiFormatReader()
+    const { BrowserMultiFormatReader, DecodeHintType, BarcodeFormat } = await import('@zxing/library')
+    // Tell zxing which symbologies exist BEFORE it picks its readers. With
+    // no POSSIBLE_FORMATS hint, MultiFormatReader.setHints(null) instantiates
+    // every reader it knows — QR, MicroQR, DataMatrix, Aztec, PDF417,
+    // MaxiCode plus all the 1-D formats — and runs EVERY one of them against
+    // every frame. zxing's own docs say these hints give a "large speed
+    // increase" for continuous scanning. Same list the native detector asks
+    // for: Code 128 for our labels, EAN/UPC for retail goods, Code 39, QR.
+    const hints = new Map()
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+      BarcodeFormat.CODE_128,
+      BarcodeFormat.EAN_13,
+      BarcodeFormat.EAN_8,
+      BarcodeFormat.UPC_A,
+      BarcodeFormat.UPC_E,
+      BarcodeFormat.CODE_39,
+      BarcodeFormat.QR_CODE,
+    ])
+    // 2nd arg = pause after a SUCCESSFUL decode. zxing defaults to 500ms,
+    // which is dead air after every scan while the cashier moves to the
+    // next item; misses still retry at the 100ms set below.
+    const reader = new BrowserMultiFormatReader(hints, 150)
     // Misses retry at 0ms by default — a hot loop that pegs a core while
     // nothing is in frame. 100ms is plenty for a POS scan.
     reader.timeBetweenDecodingAttempts = 100
