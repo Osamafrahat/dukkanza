@@ -89,7 +89,14 @@ describe('Rate Limiting', () => {
   it('auth endpoint accepts first request', async () => {
     const res = await fetch(`${BASE}/api/auth/login`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        // loginLimiter latches this IP after 3 rejected credentials, and the
+        // OTHER tests in this suite supply several of them (against a shared
+        // server, possibly from a parallel worker). A dedicated source IP
+        // keeps "first request" literally first instead of order-dependent.
+        'X-Forwarded-For': '203.0.113.10',
+      },
       body: JSON.stringify({ username: 'test', password: 'test' }),
     })
     expect(res.status).not.toBe(429)

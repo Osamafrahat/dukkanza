@@ -90,6 +90,11 @@ const clientDist = path.join(__dirname, '../../client/dist')
 const clientDistExists = fs.existsSync(clientDist)
 
 app.use(helmet({
+  // DENY, not the helmet default SAMEORIGIN: nothing ever frames this app
+  // (the landing video is a cross-origin YouTube embed, which this header
+  // doesn't govern), and it matches the X-Frame-Options: DENY the client
+  // already sends via vercel.json.
+  frameguard: { action: 'deny' },
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
