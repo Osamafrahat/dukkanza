@@ -65,6 +65,8 @@ export default function AccountingReportsPage() {
     if (!printContent) return
 
     const printWindow = window.open('', '_blank', 'width=900,height=700')
+    // Popup blocker returned null — bail instead of throwing on .document.
+    if (!printWindow) return
     printWindow.document.write(`
       <!DOCTYPE html>
       <html>

@@ -105,6 +105,8 @@ export default function BarcodePrinter({ product, onClose, note, noteClass }) {
     if (!printContent) return
 
     const printWindow = window.open('', '_blank')
+    // Popup blocker returned null — bail instead of throwing on .document.
+    if (!printWindow) return
     printWindow.document.write(`
       <html>
         <head>
