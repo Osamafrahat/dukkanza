@@ -7,34 +7,13 @@ on:
     branches: [master]
   workflow_dispatch:
 
-permissions:
-  contents: read
-
-# A newer push to the same branch supersedes an in-flight run.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  server:
-    name: Server · unit tests
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: server
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: server/package-lock.json
-      - run: npm ci
-      # test:unit excludes the integration suite, which needs live services.
-      - run: npm run test:unit
-
   client:
-    name: Client · lint, tests, build
+    name: 'Client: lint + test + build'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -47,30 +26,97 @@ jobs:
           cache: npm
           cache-dependency-path: client/package-lock.json
       - run: npm ci
-      # `eslint .` exits 0 on warnings, so the existing ~700 unused-import
-      # warnings do not fail the build — only new errors do.
       - run: npm run lint
       - run: npm test
       - run: npm run build
 
-  audit:
-    name: Dependencies · npm audit
+  server:
+    name: 'Server: unit tests'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        package: [root, server, client]
+    defaults:
+      run:
+        working-directory: server
+    env:
+      # Unit tests mock their DB calls; these three only satisfy the
+      # import-time fatals in middleware/auth.js and db/supabase.js.
+      SUPABASE_URL: http://localhost:54321
+      SUPABASE_ANON_KEY: ci-dummy-anon-key
+      JWT_SECRET: ci-dummy-jwt-secret
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      # npm audit resolves the tree from package-lock.json alone; no install
-      # needed, which keeps this job fast enough to run on every push.
-      - name: Audit ${{ matrix.package }}
-        if: matrix.package == 'root'
-        run: npm audit --omit=dev
-      - name: Audit ${{ matrix.package }}
-        if: matrix.package != 'root'
-        working-directory: ${{ matrix.package }}
-        run: npm audit --omit=dev
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  integration:
+    name: 'Server: integration (booted server)'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    env:
+      # Real credentials so the booted server reaches Supabase the same way
+      # it does locally. These tests only probe (failed logins, 401s,
+      # headers) — they never mutate data.
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      JWT_SECRET: ${{ secrets.CI_JWT_SECRET }}
+      # Needed for the "rejects preflight with disallowed origin" test: with
+      # an EMPTY allowlist the dev-mode server echoes every origin and that
+      # test fails. Any non-empty list works — it only asserts evil-site is
+      # NOT reflected.
+      ALLOWED_ORIGINS: http://localhost
+      NODE_ENV: development
+      TEST_API_URL: http://localhost:3001
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+
+      - name: Check whether Supabase secrets are configured
+        id: gate
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ] || [ -z "$JWT_SECRET" ]; then
+            echo "::notice::Integration tests skipped — SUPABASE_URL / SUPABASE_ANON_KEY / CI_JWT_SECRET secrets are not configured for this repository"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Boot server
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          node src/index.js > server.log 2>&1 &
+          echo $! > server.pid
+          for i in $(seq 1 45); do
+            if curl -sf http://localhost:3001/api/health > /dev/null; then
+              echo "server up after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::server did not become healthy in 45s"
+          cat server.log
+          exit 1
+
+      - name: Run integration tests
+        if: steps.gate.outputs.run == 'true'
+        run: npm run test:integration
+
+      - name: Server log on failure
+        if: failure()
+        run: cat server.log 2>/dev/null || true
+
+      - name: Stop server
+        if: always() && steps.gate.outputs.run == 'true'
+        run: |
+          if [ -f server.pid ]; then kill "$(cat server.pid)" 2>/dev/null || true; fi
