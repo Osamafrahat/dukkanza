@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator'
 import supabase from '../db/supabase.js'
 import { adjustStock } from '../services/branchStock.js'
 import { resolveBranchParam } from '../services/branches.js'
+import { recordSupplierAdvance, ADVANCE_METHODS } from '../services/advanceLedger.js'
 
 const router = Router()
 
@@ -64,7 +65,7 @@ router.post('/', [
   body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
 ], validate, async (req, res, next) => {
   try {
-    const { supplier_id, items, expected_date, notes } = req.body
+    const { supplier_id, items, expected_date, notes, deposit_amount, deposit_method } = req.body
 
     // Destination branch: explicit body value, else the active branch.
     const branchCheck = await resolveBranchParam(req.user?.tenantId, req.body.branch_id)
@@ -104,6 +105,24 @@ router.post('/', [
         received_quantity: 0,
       }
     })
+
+    // Optional deposit paid immediately at creation: it becomes a supplier
+    // advance (Dr 1150 / Cr cash-bank) linked to this PO, consumed FIFO on
+    // a later settlement. Validated only now because it may not exceed the
+    // order total, which was just computed above.
+    let depositValue = 0
+    if (deposit_amount !== undefined && deposit_amount !== null && deposit_amount !== '') {
+      depositValue = parseFloat(deposit_amount)
+      if (isNaN(depositValue) || depositValue <= 0) {
+        return res.status(400).json({ error: 'Deposit amount must be greater than 0' })
+      }
+      if (depositValue > total) {
+        return res.status(400).json({ error: 'Deposit cannot exceed the order total' })
+      }
+      if (deposit_method && !ADVANCE_METHODS.includes(deposit_method)) {
+        return res.status(400).json({ error: 'Invalid deposit method' })
+      }
+    }
 
     const { data: po, error: poError } = await supabase
       .from('purchase_orders')
@@ -146,7 +165,31 @@ router.post('/', [
       .eq('purchase_order_id', po.id)
       .eq('tenant_id', req.user?.tenantId)
 
-    res.status(201).json({ ...po, items: itemsData || [] })
+    // Money moves only after the PO and its items are fully persisted. If
+    // recording the deposit fails, roll the whole PO back — a created order
+    // whose paid deposit vanished is worse than a retryable 500.
+    let deposit = null
+    if (depositValue > 0) {
+      try {
+        const result = await recordSupplierAdvance({
+          tenantId: req.user.tenantId,
+          supplierId: Number(supplier_id),
+          amount: depositValue,
+          method: deposit_method || 'cash',
+          notes: notes || null,
+          reference: `ADV-${order_number}`,
+          poId: po.id,
+          userId: req.user?.id,
+        })
+        deposit = result.advance
+      } catch (depositErr) {
+        await supabase.from('purchase_order_items').delete().eq('purchase_order_id', po.id)
+        await supabase.from('purchase_orders').delete().eq('id', po.id)
+        throw depositErr
+      }
+    }
+
+    res.status(201).json({ ...po, items: itemsData || [], deposit })
   } catch (err) {
     next(err)
   }
@@ -172,7 +215,22 @@ router.get('/:id', async (req, res, next) => {
       .eq('purchase_order_id', po.id)
       .eq('tenant_id', req.user?.tenantId)
 
-    res.json({ ...po, items: items || [] })
+    // Deposit paid at creation, if any. Resilient: pre-migration the table
+    // does not exist, so the detail simply carries no deposit.
+    let deposit = null
+    try {
+      const { data: depositRow, error: depositError } = await supabase
+        .from('supplier_advances')
+        .select('*')
+        .eq('po_id', po.id)
+        .eq('tenant_id', req.user?.tenantId)
+        .maybeSingle()
+      if (!depositError) deposit = depositRow || null
+    } catch {
+      deposit = null
+    }
+
+    res.json({ ...po, items: items || [], deposit })
   } catch (err) {
     next(err)
   }

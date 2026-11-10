@@ -1,15 +1,18 @@
 import { Router } from 'express'
 import supabase from '../db/supabase.js'
 import { createJournalEntry, seedChartOfAccounts } from '../services/accountingEngine.js'
+import { consumeAdvances } from '../services/advanceLedger.js'
 import { sanitizeSearch } from '../helpers/search.js'
 
 const router = Router()
 
-// Helper: find account by code, auto-seed if missing
+// Helper: find account by code, auto-seed if missing. seedChartOfAccounts
+// needs the tenant — calling it without one seeds nothing, so the retry
+// below used to miss forever.
 async function findAccount(code, tenantId) {
   let { data } = await supabase.from('accounts').select('id').eq('code', code).eq('tenant_id', tenantId).single()
   if (!data) {
-    await seedChartOfAccounts()
+    await seedChartOfAccounts(tenantId)
     const retry = await supabase.from('accounts').select('id').eq('code', code).eq('tenant_id', tenantId).single()
     data = retry.data
   }
@@ -118,6 +121,29 @@ router.post('/', async (req, res) => {
       apAccount = await findAccount('2010', req.user.tenantId)
     }
 
+    // Auto-consume supplier advances, oldest first: the settlement still
+    // debits AP in full, but part of it is paid out of the advance asset
+    // instead of cash. Resolve the 1150 account BEFORE consuming — if it
+    // cannot be found there is nothing to credit the consumed part to, so
+    // we must not consume at all.
+    let advanceApplied = 0
+    const settleAmount = parseFloat(amount)
+    if (payment_type === 'outbound' && partner_type === 'supplier' && partner_id && settleAmount > 0) {
+      const advanceAccount = await findAccount('1150', req.user.tenantId)
+      if (advanceAccount) {
+        try {
+          // consumeAdvances returns what it actually marked consumed; the
+          // journal below credits exactly that, so partial consumption is
+          // never under- or over-reported.
+          advanceApplied = await consumeAdvances(req.user.tenantId, Number(partner_id), settleAmount)
+        } catch (advErr) {
+          // Nothing was consumed if this threw before any row update.
+          console.error('Advance consumption failed:', advErr.message)
+          advanceApplied = 0
+        }
+      }
+    }
+
     // Card, check, bank_transfer all settle to bank account
     const sourceAccount = method === 'cash' ? cashAccount : bankAccount
     const lines = []
@@ -127,9 +153,15 @@ router.post('/', async (req, res) => {
       if (sourceAccount) lines.push({ accountId: sourceAccount.id, debit: parseFloat(amount), credit: 0, description: `Payment received - ${paymentNumber}` })
       if (effectiveArAccount) lines.push({ accountId: effectiveArAccount.id, debit: 0, credit: parseFloat(amount), description: `AR reduction - ${paymentNumber}` })
     } else {
-      // We pay supplier: debit supplier AP, credit cash/bank
-      if (apAccount) lines.push({ accountId: apAccount.id, debit: parseFloat(amount), credit: 0, description: `AP reduction - ${paymentNumber}` })
-      if (sourceAccount) lines.push({ accountId: sourceAccount.id, debit: 0, credit: parseFloat(amount), description: `Payment made - ${paymentNumber}` })
+      // We settle with the supplier: debit supplier AP in full, credit the
+      // advance asset for what it covered, credit cash/bank for the rest.
+      if (apAccount) lines.push({ accountId: apAccount.id, debit: settleAmount, credit: 0, description: `AP reduction - ${paymentNumber}` })
+      if (advanceApplied > 0) {
+        const advanceAccount = await findAccount('1150', req.user.tenantId)
+        if (advanceAccount) lines.push({ accountId: advanceAccount.id, debit: 0, credit: advanceApplied, description: `Advance applied - ${paymentNumber}` })
+      }
+      const cashPart = settleAmount - advanceApplied
+      if (sourceAccount && cashPart > 0) lines.push({ accountId: sourceAccount.id, debit: 0, credit: cashPart, description: `Payment made - ${paymentNumber}` })
     }
 
     if (lines.length > 0) {
@@ -150,7 +182,9 @@ router.post('/', async (req, res) => {
       }
     }
 
-    res.status(201).json(payment)
+    // The cash that actually left (settlement minus advance applied) is what
+    // the payments table must show — advances are not cash movement.
+    res.status(201).json({ ...payment, advance_applied: advanceApplied })
     req.logActivity({ action: 'created', entity_type: 'payment', entity_id: payment.id, entity_name: payment.payment_number, details: { payment_type, method, amount: parseFloat(amount) } })
   } catch (err) {
     console.error('Create payment error:', err)

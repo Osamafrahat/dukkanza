@@ -22,6 +22,7 @@ import ordersRouter from './routes/orders.js'
 import stockRouter from './routes/stock.js'
 import branchesRouter from './routes/branches.js'
 import suppliersRouter from './routes/suppliers.js'
+import supplierAdvancesRouter from './routes/supplierAdvances.js'
 import promotionsRouter from './routes/promotions.js'
 import reportsRouter from './routes/reports.js'
 import settingsRouter from './routes/settings.js'
@@ -192,6 +193,10 @@ app.use('/api/orders', authenticateToken, setTenantContext, activityLogger, orde
 app.use('/api/stock', authenticateToken, setTenantContext, activityLogger, stockRouter)
 app.use('/api/branches', authenticateToken, setTenantContext, activityLogger, branchesRouter)
 app.use('/api/suppliers', authenticateToken, setTenantContext, activityLogger, suppliersRouter)
+// Advances move money, so this sits behind requireManager exactly like the
+// payments router — not behind suppliers_edit, which only guards the
+// supplier directory itself.
+app.use('/api/supplier-advances', authenticateToken, setTenantContext, requireManager, activityLogger, supplierAdvancesRouter)
 app.use('/api/promotions', authenticateToken, setTenantContext, activityLogger, promotionsRouter)
 app.use('/api/reports', authenticateToken, setTenantContext, activityLogger, reportsRouter)
 app.use('/api/settings', activityLogger, optionalAuthenticateToken, settingsRouter)
