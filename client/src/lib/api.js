@@ -166,6 +166,13 @@ export const suppliersApi = {
   delete: (id) => api.delete(`/suppliers/${id}`),
 }
 
+// Supplier advances (prepayments) API — manager-gated server-side
+export const supplierAdvancesApi = {
+  list: (supplierId) => api.get('/supplier-advances', { params: supplierId ? { supplier_id: supplierId } : {} }),
+  create: (data) => api.post('/supplier-advances', data),
+  available: (supplierId) => api.get(`/supplier-advances/available/${supplierId}`),
+}
+
 // Promotions API
 export const promotionsApi = {
   getAll: () => api.get('/promotions'),

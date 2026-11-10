@@ -66,13 +66,18 @@ export default function PaymentsPage() {
         await paymentsApi.update(editingId, formData)
         toastSuccess(t('common.updated') || 'Updated successfully')
       } else {
-        await paymentsApi.create(formData)
-        toastSuccess(t('accounting.paymentRecorded'))
+        const res = await paymentsApi.create(formData)
+        const applied = parseFloat(res?.data?.advance_applied) || 0
+        toastSuccess(applied > 0
+          ? `${t('accounting.paymentRecorded')} — ${t('payments.toastAdvanceApplied')}: ${applied.toLocaleString('en-EG', { minimumFractionDigits: 2 })} EGP`
+          : t('accounting.paymentRecorded'))
       }
       setShowForm(false)
       setEditingId(null)
       setFormData({ payment_type: 'inbound', method: 'cash', amount: '', reference: '', notes: '', payment_date: new Date().toISOString().split('T')[0], partner_type: '', partner_id: '' })
       fetchPayments()
+      // The advance balance just moved — refresh so the next hint is honest.
+      suppliersApi.getAll().then(res => setSuppliers(res.data || [])).catch(() => {})
     } catch (err) {
       toastError(err.response?.data?.error || t('common.failed'))
     } finally {
@@ -162,6 +167,38 @@ export default function PaymentsPage() {
 className="w-full px-4 py-2.5 rounded-xl border border-border bg-surface-secondary outline-none ring-focus"
               />
             )}
+
+            {/* Settlement hint: what an advance will cover before the user
+                commits the payment. Pure preview — the server consumes the
+                same FIFO amounts on save. */}
+            {formData.payment_type === 'outbound' && formData.partner_type === 'supplier' && formData.partner_id && (() => {
+              const supplier = suppliers.find(s => String(s.id) === String(formData.partner_id))
+              if (!supplier) return null
+              const owed = parseFloat(supplier.balance) || 0
+              const available = parseFloat(supplier.advance_available) || 0
+              const amount = parseFloat(formData.amount) || 0
+              const applied = Math.min(available, amount)
+              const cash = amount - applied
+              return (
+                <div data-testid="settlement-hint" className="px-4 py-3 rounded-xl bg-accent-soft border border-accent/30 text-sm space-y-1">
+                  <div className="flex justify-between">
+                    <span className="text-muted">{t('payments.owed')}</span>
+                    <span className={`font-bold ${owed > 0 ? 'text-danger' : 'text-success'}`}>{owed.toLocaleString('en-EG', { minimumFractionDigits: 2 })} EGP</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted">{t('payments.advanceApplied')}</span>
+                    <span className={`font-bold ${applied > 0 ? 'text-accent' : 'text-muted'}`}>{applied.toLocaleString('en-EG', { minimumFractionDigits: 2 })} EGP</span>
+                  </div>
+                  <div className="flex justify-between border-t border-accent/20 pt-1">
+                    <span className="text-muted">{t('payments.cashToPay')}</span>
+                    <span className="font-bold">{cash.toLocaleString('en-EG', { minimumFractionDigits: 2 })} EGP</span>
+                  </div>
+                  {applied > 0 && (
+                    <p className="text-xs text-accent">{t('payments.advanceHint')}</p>
+                  )}
+                </div>
+              )
+            })()}
 <input type="number"value={formData.amount}onChange={e=>setFormData({...formData,amount: e.target.value})}placeholder={`${t('accounting.amount')}(EGP)`}className="w-full px-4 py-2.5 rounded-xl border border-border bg-surface-secondary outline-none ring-focus text-lg font-bold"/>
 <input type="date"value={formData.payment_date}onChange={e=>setFormData({...formData,payment_date: e.target.value})}className="w-full px-4 py-2.5 rounded-xl border border-border bg-surface-secondary outline-none ring-focus"/>
 <input value={formData.reference}onChange={e=>setFormData({...formData,reference: e.target.value})}placeholder={`${t('accounting.reference')}(${t('accounting.optional')})`}className="w-full px-4 py-2.5 rounded-xl border border-border bg-surface-secondary outline-none ring-focus"/>

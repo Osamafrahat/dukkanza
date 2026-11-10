@@ -27,6 +27,8 @@ export default function PurchaseOrdersPage() {
     expected_date: '',
     branch_id: '',
     notes: '',
+    deposit_amount: '',
+    deposit_method: 'cash',
     items: [{ product_id: '', quantity: '', unit_price: '' }]
   })
 
@@ -125,6 +127,20 @@ export default function PurchaseOrdersPage() {
       return
     }
 
+    // Optional deposit: paid immediately at creation, becomes a supplier
+    // advance linked to this PO. Mirrors the server-side validation so the
+    // user gets the error inline instead of from a 400.
+    const orderTotal = validItems.reduce((sum, item) => sum + parseInt(item.quantity) * parseFloat(item.unit_price), 0)
+    const deposit = form.deposit_amount === '' ? 0 : parseFloat(form.deposit_amount)
+    if (isNaN(deposit) || deposit < 0) {
+      toastError(t('purchaseOrders.depositInvalid') || 'Invalid deposit amount')
+      return
+    }
+    if (deposit > 0 && deposit > orderTotal) {
+      toastError(t('purchaseOrders.depositExceedsTotal') || 'Deposit cannot exceed the order total')
+      return
+    }
+
     try {
       setSubmitting(true)
       await purchaseOrdersApi.create({
@@ -133,6 +149,7 @@ export default function PurchaseOrdersPage() {
         // Optional destination branch; null = server defaults to current branch
         branch_id: form.branch_id === '' ? null : Number(form.branch_id),
         notes: form.notes,
+        ...(deposit > 0 ? { deposit_amount: deposit, deposit_method: form.deposit_method } : {}),
         items: validItems.map((item) => ({
           product_id: item.product_id,
           quantity: parseInt(item.quantity),
@@ -141,7 +158,7 @@ export default function PurchaseOrdersPage() {
       })
       toastSuccess(t('purchaseOrders.created'))
       setShowCreateForm(false)
-      setForm({ supplier_id: '', expected_date: '', branch_id: '', notes: '', items: [{ product_id: '', quantity: '', unit_price: '' }] })
+      setForm({ supplier_id: '', expected_date: '', branch_id: '', notes: '', deposit_amount: '', deposit_method: 'cash', items: [{ product_id: '', quantity: '', unit_price: '' }] })
       fetchData()
     } catch (err) {
       toastError(err.message || t('purchaseOrders.createFailed'))
@@ -473,6 +490,40 @@ className="w-full px-3 py-2 border border-border rounded-lg bg-surface text-fore
                 />
               </div>
 
+              {/* Optional deposit: paid now, recorded as a supplier advance
+                  linked to this PO and consumed on later settlement. */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">{t('purchaseOrders.depositAmount')}</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.deposit_amount}
+                    onChange={(e) => setForm({ ...form, deposit_amount: e.target.value })}
+                    placeholder={`0 (${t('accounting.optional')})`}
+className="w-full px-3 py-2 border border-border rounded-lg bg-surface text-foreground ring-focus outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">{t('purchaseOrders.depositMethod')}</label>
+                  <select
+                    value={form.deposit_method}
+                    onChange={(e) => setForm({ ...form, deposit_method: e.target.value })}
+                    disabled={form.deposit_amount === ''}
+className="w-full px-3 py-2 border border-border rounded-lg bg-surface text-foreground ring-focus outline-none disabled:opacity-50"
+                  >
+                    <option value="cash">{t('accounting.cash')}</option>
+                    <option value="bank_transfer">{t('accounting.bankTransfer')}</option>
+                    <option value="card">{t('accounting.card')}</option>
+                    <option value="check">{t('accounting.check')}</option>
+                  </select>
+                </div>
+              </div>
+              {form.deposit_amount !== '' && parseFloat(form.deposit_amount) > 0 && (
+                <p className="text-xs text-accent -mt-2">{t('purchaseOrders.depositHint')}</p>
+              )}
+
               <div>
 <label className="block text-sm font-medium text-foreground mb-2">{t('items')||'Items'}</label>
                 {form.items.map((item, idx) => (
@@ -575,6 +626,14 @@ className="w-full px-3 py-2 border border-border rounded-lg bg-surface text-fore
 <p className="text-sm text-muted">{t('total')||'Total'}</p>
 <p className="font-semibold text-foreground">{formatCurrency(showDetail.total)}</p>
               </div>
+              {showDetail.deposit && (
+                <div>
+<p className="text-sm text-muted">{t('purchaseOrders.depositAmount')}</p>
+<p className="font-semibold text-accent">
+                    {formatCurrency(showDetail.deposit.amount)} ({t('purchaseOrders.depositPaid')})
+                  </p>
+                </div>
+              )}
             </div>
 
             {showDetail.notes && (
