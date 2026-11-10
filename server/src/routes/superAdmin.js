@@ -403,6 +403,27 @@ router.delete('/tenants/:id', async (req, res) => {
     // below; clear it before the users delete to avoid a second-wave failure.
     await safeDel('fiscal_periods', `tenant_id = ${tid}`)
 
+    // Manufacturing is tenant-owned but has two RESTRICT FKs this list
+    // historically ignored, so any tenant that ever ran production fails:
+    //   - production_order_items.product_id and production_orders.product_id
+    //     -> products are RESTRICT (NOT NULL): the products delete below
+    //     500s while a production order exists. Deleting production_orders
+    //     first cascades production_order_items (order_id -> production_orders
+    //     is CASCADE, order_id is NOT NULL, so no orphans) and unblocks it.
+    //   - bom_operations.work_center_id -> work_centers is RESTRICT: the
+    //     final tenants-row cascade would delete work_centers while bom
+    //     operations still referenced them. bills_of_materials cascades
+    //     bom_items + bom_operations (bom_id is NOT NULL), so it must go
+    //     before work_centers.
+    // Children first: quality checks -> work orders -> production orders ->
+    // BOMs -> work centers. Everything else in the cluster only has SET
+    // NULL / cascade FKs, so this order is what matters.
+    await safeDel('quality_checks', `tenant_id = ${tid}`)
+    await safeDel('work_orders', `tenant_id = ${tid}`)
+    await safeDel('production_orders', `tenant_id = ${tid}`)
+    await safeDel('bills_of_materials', `tenant_id = ${tid}`)
+    await safeDel('work_centers', `tenant_id = ${tid}`)
+
     // 4. Top-level
     await safeDel('products', `tenant_id = ${tid}`)
     await safeDel('categories', `tenant_id = ${tid}`)
@@ -423,14 +444,19 @@ router.delete('/tenants/:id', async (req, res) => {
     await safeDel('tenants', `id = ${tid}`)
 
     if (failedDeletes.length > 0) {
-      console.error(`[SuperAdmin] Tenant ${tid} delete incomplete, failed tables: ${failedDeletes.join(', ')}`)
-      return res.status(500).json({ error: 'Internal server error' })
+      const details = `Tenant delete incomplete, failed tables: ${failedDeletes.join(', ')}`
+      console.error(`[SuperAdmin] ${details}`)
+      // `error` stays the generic string every consumer expects; `details`
+      // is what capture500 turns into the Sentry message and the operator
+      // alert, so the next failure names the blocking table instead of a
+      // bare "Internal server error".
+      return res.status(500).json({ error: 'Internal server error', details })
     }
 
     res.json({ message: `Tenant "${tenant.name}" and all its data have been permanently deleted` })
   } catch (err) {
     console.error('[SuperAdmin] Delete tenant error:', err.message)
-    res.status(500).json({ error: 'Internal server error' })
+    res.status(500).json({ error: 'Internal server error', details: `Tenant delete error: ${err.message}` })
   }
 })
 

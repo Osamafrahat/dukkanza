@@ -70,6 +70,27 @@ describe('capture500Responses', () => {
     expect(captureException).not.toHaveBeenCalled()
   })
 
+  it('prefers the handler diagnostic `details` over the generic error', () => {
+    // Routes keep `error` generic ("Internal server error"); a handler that
+    // adds `details` (tenant delete: the blocking table list) wants THAT
+    // string in the Sentry message and the operator alert.
+    mount()
+    res.statusCode = 500
+    res.json({
+      error: 'Internal server error',
+      details: 'Tenant delete incomplete, failed tables: products',
+    })
+
+    expect(captureException).toHaveBeenCalledTimes(1)
+    const [err, context] = captureException.mock.calls[0]
+    expect(err.message).toBe(
+      'POST /api/accounts responded 500: Tenant delete incomplete, failed tables: products',
+    )
+    expect(context.detail).toBe(
+      'Tenant delete incomplete, failed tables: products',
+    )
+  })
+
   it('reports only once per request even if json and send both fire', () => {
     mount()
     res.statusCode = 500

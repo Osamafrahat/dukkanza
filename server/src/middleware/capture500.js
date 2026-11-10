@@ -21,7 +21,13 @@ export function capture500Responses(req, res, next) {
     if (res.statusCode < 500 || res.locals.sentryReported) return
     res.locals.sentryReported = true
 
-    const detail = body && typeof body === 'object' ? body.error : undefined
+    // `error` is deliberately generic in most route responses; when a
+    // handler adds a safe diagnostic `details` field (e.g. the tenant-delete
+    // list of blocking tables), that is the string worth putting in the
+    // Sentry message and the operator alert - a bare "Internal server
+    // error" cannot be acted on.
+    const detail =
+      body && typeof body === 'object' ? body.details ?? body.error : undefined
     const err = new Error(
       `${req.method} ${req.originalUrl} responded ${res.statusCode}${detail ? `: ${detail}` : ''}`,
     )

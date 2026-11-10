@@ -64,6 +64,45 @@ describe('tenant delete cascade', () => {
     expect(lines).toBeLessThan(cascade.indexOf('journal_entries'))
   })
 
+  it('deletes the manufacturing cluster before products and the tenant row', () => {
+    // production_order_items/product_orders.product_id -> products is
+    // RESTRICT and bom_operations.work_center_id -> work_centers is
+    // RESTRICT: without these deletes, any tenant with a production order
+    // fails the products delete and any tenant with BOM operations fails
+    // the final tenants-row cascade -> the same 500 this file already
+    // pins three other causes for. Children first, parents before the
+    // tables their own FKs point at.
+    const cluster = [
+      'quality_checks',
+      'work_orders',
+      'production_orders',
+      'bills_of_materials',
+      'work_centers',
+    ]
+    for (const table of cluster) expect(cascade).toContain(table)
+    const lastClusterIndex = Math.max(...cluster.map((t) => cascade.indexOf(t)))
+    expect(lastClusterIndex).toBeLessThan(cascade.indexOf('products'))
+    expect(lastClusterIndex).toBeLessThan(cascade.indexOf('tenants'))
+    // work_centers must follow bills_of_materials: deleting work_centers
+    // first would hit bom_operations.work_center_id RESTRICT.
+    expect(cascade.indexOf('bills_of_materials')).toBeLessThan(
+      cascade.indexOf('work_centers'),
+    )
+    // All five are tenant-scoped with the interpolated form - a
+    // double-quoted "${tid}" passes the literal text and safeDel throws.
+    for (const table of cluster) {
+      expect(source).toContain(`safeDel('${table}', \`tenant_id = \${tid}\`)`)
+    }
+  })
+
+  it('reports which table blocked the delete instead of a bare 500', () => {
+    // capture500 turns `details` into the Sentry message and the operator
+    // alert; without it the next tenant-delete 500 is as unactionable as
+    // the one that sent everyone digging.
+    expect(source).toContain('failed tables: ${failedDeletes.join')
+    expect(source).toContain('details: `Tenant delete error: ${err.message}`')
+  })
+
   it('still deletes the whole tenant last', () => {
     expect(cascade[cascade.length - 1]).toBe('tenants')
   })
