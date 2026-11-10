@@ -102,9 +102,14 @@ jest.unstable_mockModule('../db/supabase.js', () => ({
 // entry ROW (not {data}), which is what both callers dereference.
 const journalSpy = jest.fn(async () => ({ id: 501 }))
 const seedSpy = jest.fn(async () => undefined)
+// Used by recordSupplierAdvance's cleanup: a failed advance row must undo
+// the payment's journal, so the mock has to export the reverser too or the
+// module fails to link.
+const reverseSpy = jest.fn(async () => ({ id: 502 }))
 jest.unstable_mockModule('../services/accountingEngine.js', () => ({
   createJournalEntry: journalSpy,
   seedChartOfAccounts: seedSpy,
+  reverseJournalEntry: reverseSpy,
 }))
 
 const { default: supplierAdvancesRouter } = await import('../routes/supplierAdvances.js')
@@ -200,6 +205,27 @@ describe('POST /supplier-advances — recording', () => {
     expect(res.status).toBe(404)
     expect(callsFor('payments')).toBe(0)
     expect(journalSpy).not.toHaveBeenCalled()
+  })
+
+  it('undoes the payment and reverses its journal when the advance row fails', async () => {
+    // Regression: pre-migration, the supplier_advances insert threw AFTER
+    // the payment and journal already existed — cash stayed credited with
+    // nothing to show for it (production's payment 46 / entry 113, 200 EGP
+    // with no advance row). The failure must now take both with it.
+    queues.get('supplier_advances').length = 0
+    enqueue('supplier_advances', {
+      data: null,
+      error: { message: 'relation "supplier_advances" does not exist' },
+    })
+
+    const res = await request(app)
+      .post('/api/supplier-advances')
+      .send({ supplier_id: 9, amount: 250, method: 'cash' })
+
+    expect(res.status).toBe(500)
+    // payments was touched three times: insert, journal-link update, delete.
+    expect(callsFor('payments')).toBe(3)
+    expect(reverseSpy).toHaveBeenCalledWith(501, expect.stringContaining('PAY-20261109-0001'), 1, 1)
   })
 })
 
@@ -321,6 +347,38 @@ describe('POST /accounting/payments — advance auto-consume', () => {
 
     const { lines } = journalSpy.mock.calls[0][0]
     expect(lines.some((l) => l.accountId === 5)).toBe(false)
+  })
+})
+
+describe('POST /accounting/payments — outbound must name a supplier', () => {
+  it('rejects an outbound payment with no supplier before writing anything', async () => {
+    // Without this guard the journal falls back to generic 2010: the payment
+    // posts fine but the supplier's own balance never moves — silent
+    // "payment did not decrease the remaining value".
+    const res = await request(app)
+      .post('/api/accounting/payments')
+      .send({ payment_type: 'outbound', method: 'cash', amount: 100 })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error).toContain('supplier')
+    expect(callsFor('payments')).toBe(0)
+    expect(journalSpy).not.toHaveBeenCalled()
+  })
+
+  it('still accepts an inbound payment without a partner', async () => {
+    enqueue('payments',
+      { data: { id: 801, payment_number: 'PAY-20261109-0004' }, error: null },
+      { data: null, error: null })
+
+    const res = await request(app)
+      .post('/api/accounting/payments')
+      .send({ payment_type: 'inbound', method: 'cash', amount: 50 })
+
+    expect(res.status).toBe(201)
+    expect(journalSpy).toHaveBeenCalledTimes(1)
+    const { lines } = journalSpy.mock.calls[0][0]
+    expect(lines[0]).toMatchObject({ accountId: 1, debit: 50 })   // cash in
+    expect(lines[1]).toMatchObject({ accountId: 3, credit: 50 })  // generic AR
   })
 })
 

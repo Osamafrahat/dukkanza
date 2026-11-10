@@ -126,4 +126,23 @@ describe('PaymentsPage — settlement hint', () => {
     await screen.findByText('All Types')
     expect(screen.queryByTestId('settlement-hint')).toBeNull()
   })
+
+  it('refuses to save an outbound payment without a supplier', async () => {
+    render(<PaymentsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: /New Payment/ }))
+
+    openSelect('Inbound (Received)')
+    pickOption('Outbound (Paid)')
+    // Supplier deliberately left unselected, then an amount is typed.
+    fireEvent.change(await screen.findByPlaceholderText(/EGP/), { target: { value: '100' } })
+
+    fireEvent.click(screen.getByRole('button', { name: /Save/ }))
+
+    await waitFor(() => {
+      const toasts = useAppStore.getState().toasts
+      expect(toasts.some((t) => t.type === 'error' && t.message === 'Select a supplier for this payment')).toBe(true)
+    })
+    // The request never leaves the client — nothing to roll back server-side.
+    expect(paymentsApi.create).not.toHaveBeenCalled()
+  })
 })

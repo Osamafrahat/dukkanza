@@ -59,6 +59,12 @@ export default function PaymentsPage() {
 
   const handleSubmit = async () => {
     if (!formData.amount || parseFloat(formData.amount) <= 0) return toastError(t('accounting.enterAmount'))
+    // Mirror the server's rule so the user is told here rather than bounced
+    // off a 400: an outbound payment that names no supplier could never move
+    // that supplier's Remaining Balance.
+    if (formData.payment_type === 'outbound' && (formData.partner_type !== 'supplier' || !formData.partner_id)) {
+      return toastError(t('payments.selectSupplierRequired'))
+    }
     if (isSubmitting) return
     setIsSubmitting(true)
     try {

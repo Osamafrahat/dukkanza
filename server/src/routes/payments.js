@@ -59,6 +59,14 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'Payment type, method, and amount are required' })
     }
 
+    // An outbound payment settles a supplier payable. Without a supplier it
+    // would fall back to the generic 2010 account, leaving the supplier's
+    // own balance untouched — the payment looks recorded but the Remaining
+    // Balance on the Suppliers page never moves. Reject loudly instead.
+    if (payment_type === 'outbound' && (partner_type !== 'supplier' || !partner_id)) {
+      return res.status(400).json({ error: 'Outbound payments must name a supplier' })
+    }
+
     // Generate payment number
     const date = new Date().toISOString().split('T')[0].replace(/-/g, '')
     const rand = Math.floor(Math.random() * 9999).toString().padStart(4, '0')
@@ -245,7 +253,9 @@ router.delete('/:id', async (req, res) => {
     if (payment.journal_entry_id) {
       try {
         const { reverseJournalEntry } = await import('../services/accountingEngine.js')
-        await reverseJournalEntry(payment.journal_entry_id, `Payment deleted: ${payment.payment_number}`, req.user?.id)
+        // tenantId is required: reverseJournalEntry scopes its lookup by it,
+        // and without it the reversal silently never found the entry.
+        await reverseJournalEntry(payment.journal_entry_id, `Payment deleted: ${payment.payment_number}`, req.user?.id, req.user?.tenantId)
       } catch (accErr) {
         console.error('Accounting auto-reverse failed:', accErr.message)
       }

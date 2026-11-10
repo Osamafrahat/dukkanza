@@ -8,7 +8,7 @@
 // remainder — so one payment line still equals the cash that left.
 
 import supabase from '../db/supabase.js'
-import { createJournalEntry, seedChartOfAccounts } from './accountingEngine.js'
+import { createJournalEntry, seedChartOfAccounts, reverseJournalEntry } from './accountingEngine.js'
 
 const ADVANCE_ACCOUNT_CODE = '1150'
 
@@ -196,7 +196,33 @@ export async function recordSupplierAdvance({
     })
     .select()
     .single()
-  if (advanceError) throw advanceError
+  if (advanceError) {
+    // The payment row and its journal exist ONLY to carry this advance, so
+    // an advance that cannot be written must take them with it — otherwise
+    // cash is credited with nothing to show for it (payment 46 / entry 113:
+    // 200 EGP booked to 1150 with no supplier_advances row, which is what
+    // happened while the migration was still pending). Undo both, then
+    // surface the original failure so the caller still reports an error.
+    try {
+      const { error: deleteError } = await supabase
+        .from('payments')
+        .delete()
+        .eq('tenant_id', tenantId)
+        .eq('id', payment.id)
+      if (deleteError) throw deleteError
+      if (journalEntryId) {
+        await reverseJournalEntry(
+          journalEntryId,
+          `Supplier advance failed: ${payment.payment_number}`,
+          userId,
+          tenantId
+        )
+      }
+    } catch (cleanupErr) {
+      console.error('[ADVANCE] Cleanup after failed advance insert:', cleanupErr.message)
+    }
+    throw advanceError
+  }
 
   return { payment, advance, journalEntryId }
 }
