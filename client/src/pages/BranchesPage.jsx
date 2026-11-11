@@ -1,4 +1,5 @@
 import ConfirmModal from '../components/ConfirmModal'
+import PhoneField from '../components/PhoneField'
 import SearchableSelect from '../components/SearchableSelect'
 import { useState, useEffect } from 'react'
 import { useAppStore } from '../stores/appStore'
@@ -684,15 +685,11 @@ function BranchForm({ branch, saving, onSave, onClose }) {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-foreground mb-1">
-              {t('branches.phone')}
-            </label>
-            <input
-              type="tel"
-              name="phone"
+            <PhoneField
+              id="branch-phone"
+              label={t('branches.phone')}
               value={formData.phone}
-              onChange={handleChange}
-              className="w-full px-4 py-2 rounded-lg border border-border bg-surface"
+              onChange={(full) => setFormData((prev) => ({ ...prev, phone: full }))}
             />
           </div>
 

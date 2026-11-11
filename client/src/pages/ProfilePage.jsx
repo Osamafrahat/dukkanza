@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { useUserStore } from '../stores/userStore'
 import { authApi } from '../lib/api'
+import PhoneField from '../components/PhoneField'
 import { User, Phone, Mail, Lock, Shield, Calendar, ArrowLeft, Save, Eye, EyeOff, CheckCircle, Pencil, X } from 'lucide-react'
 
 export default function ProfilePage() {
@@ -210,16 +211,14 @@ className="flex items-center gap-1.5 px-4 py-2 min-h-[44px] text-sm font-medium 
 
         {editingContact ? (
           <div className="space-y-4">
-            <div>
-<label className="block text-sm font-medium text-foreground mb-1.5">{t('profile.phone')}</label>
-              <input
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder={t('profile.phonePlaceholder')}
-className="w-full px-4 py-2.5 rounded-xl border border-border bg-surface-secondary ring-focus focus:border-transparent outline-none transition-all"
-              />
-            </div>
+            <PhoneField
+              id="profile-phone"
+              label={t('profile.phone')}
+              value={phone}
+              onChange={setPhone}
+              placeholder={t('profile.phonePlaceholder')}
+              inputClassName="rounded-xl py-2.5 bg-surface-secondary ring-focus focus:border-transparent outline-none transition-all"
+            />
             <div>
 <label className="block text-sm font-medium text-foreground mb-1.5">{t('profile.email')}</label>
               <input

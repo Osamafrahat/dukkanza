@@ -1,6 +1,7 @@
 import ConfirmModal from '../components/ConfirmModal'
 import CsvImportModal from '../components/CsvImportModal'
-import SearchableSelect from '../components/SearchableSelect'
+import PhoneField from '../components/PhoneField'
+import { parseFullPhone } from '../lib/phone'
 import { useState, useEffect } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { useUserStore, PERMISSIONS } from '../stores/userStore'
@@ -474,65 +475,31 @@ order.payment_status==='pending'?'bg-warning-soft text-warning-soft-foreground':
 function CustomerForm({ customer, onSave, onClose }) {
   const { t } = useAppStore()
 
-  const parsePhone = (phone) => {
-    if (!phone) return { countryCode: '+20', number: '' }
-    const codes = ['+20','+966','+971','+965','+973','+974','+968','+962','+961','+216','+212','+213','+1','+44']
-    for (const code of codes) {
-      if (phone.startsWith(code)) {
-        return { countryCode: code, number: phone.slice(code.length).replace(/^0+/, '') }
-      }
-    }
-    return { countryCode: '+20', number: phone.replace(/^0+/, '') }
-  }
-
-  const parsed = parsePhone(customer?.phone)
-
+  // `phone` holds the FULL stored number ('+201012345678'); PhoneField splits
+  // it into dial code + digits for editing and emits it composed again.
   const [formData, setFormData] = useState({
     name: customer?.name || '',
-    countryCode: parsed.countryCode,
-    phone: parsed.number,
+    phone: customer?.phone || '',
     email: customer?.email || '',
     address: customer?.address || '',
     notes: customer?.notes || '',
   })
   const [phoneError, setPhoneError] = useState('')
 
-  const countryCodes = [
-    { code: '+20', name: t('country.egypt'), flag: '🇪🇬' },
-    { code: '+966', name: t('country.saudiArabia'), flag: '🇸🇦' },
-    { code: '+971', name: t('country.uae'), flag: '🇦🇪' },
-    { code: '+965', name: t('country.kuwait'), flag: '🇰🇼' },
-    { code: '+973', name: t('country.bahrain'), flag: '🇧🇭' },
-    { code: '+974', name: t('country.qatar'), flag: '🇶🇦' },
-    { code: '+968', name: t('country.oman'), flag: '🇴🇲' },
-    { code: '+962', name: t('country.jordan'), flag: '🇯🇴' },
-    { code: '+961', name: t('country.lebanon'), flag: '🇱🇧' },
-    { code: '+216', name: t('country.tunisia'), flag: '🇹🇳' },
-    { code: '+212', name: t('country.morocco'), flag: '🇲🇦' },
-    { code: '+213', name: t('country.algeria'), flag: '🇩🇿' },
-    { code: '+1', name: t('country.usaCanada'), flag: '🇺🇸' },
-    { code: '+44', name: t('country.uk'), flag: '🇬🇧' },
-  ]
-
   const handleChange = (e) => {
     const { name, value } = e.target
-    if (name === 'phone') {
-      setFormData(prev => ({ ...prev, phone: value.replace(/\D/g, '').replace(/^0+/, '').slice(0, 11) }))
-      setPhoneError('')
-    } else {
-      setFormData(prev => ({ ...prev, [name]: value }))
-    }
+    setFormData(prev => ({ ...prev, [name]: value }))
   }
 
   const handleSubmit = (e) => {
     e.preventDefault()
-    if (formData.phone && formData.phone.length !== 10) {
+    const digits = parseFullPhone(formData.phone).number
+    if (digits && digits.length !== 10) {
       setPhoneError(t('customers.phoneLengthError'))
       return
     }
     setPhoneError('')
-    const fullPhone = formData.phone ? `${formData.countryCode}${formData.phone}` : ''
-    onSave({ ...formData, phone: fullPhone })
+    onSave(formData)
   }
 
   return (
@@ -569,43 +536,13 @@ className="w-full px-4 py-2 rounded-lg border border-border bg-surface"
             />
           </div>
 
-          <div>
-<label className="block text-sm font-medium text-foreground mb-1">
-              {t('customers.phone')}
-            </label>
-            {/* The min-w-0 on the phone input below is load-bearing: flex-1
-                alone cannot shrink an <input> under its intrinsic (~20ch)
-                min-content width, so on a phone the row kept the country
-                select's fixed 128px plus that intrinsic width and pushed the
-                input past the modal edge and off-screen. */}
-            <div className="flex gap-2">
-              <SearchableSelect
-                options={countryCodes.map(c => ({ value: c.code, label: `${c.flag} ${c.code}` }))}
-                value={formData.countryCode}
-                onChange={(v) => setFormData(prev => ({ ...prev, countryCode: v }))}
-                placeholder={t('common.searchSelect')}
-                className="w-32 px-3 py-2 rounded-lg border border-border bg-surface text-sm"
-              />
-              <input
-                type="tel"
-                name="phone"
-                value={formData.phone}
-                onChange={handleChange}
-                placeholder="1xxxxxxxxx"
-                inputMode="numeric"
-                maxLength={10}
-className={`flex-1 min-w-0 px-4 py-2 rounded-lg border bg-surface ${
-phoneError ?'border-danger':'border-border'
-                }`}
-              />
-            </div>
-            {phoneError && (
-<p className="mt-1 text-xs text-danger">{phoneError}</p>
-            )}
-            {!phoneError && formData.phone && formData.phone.length < 10 && (
-<p className="mt-1 text-xs text-warning">{10 - formData.phone.length}{t('customers.digitsRemaining')}</p>
-            )}
-          </div>
+          <PhoneField
+            id="customer-phone"
+            label={t('customers.phone')}
+            value={formData.phone}
+            onChange={(full) => { setFormData(prev => ({ ...prev, phone: full })); setPhoneError('') }}
+            error={phoneError}
+          />
 
           <div>
 <label className="block text-sm font-medium text-foreground mb-1">

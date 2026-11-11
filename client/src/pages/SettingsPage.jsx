@@ -1,5 +1,6 @@
 import { Save, Store, Percent, Receipt, AlertTriangle, Globe, Star, Upload, X, MapPin, Navigation } from 'lucide-react'
 import SearchableSelect from '../components/SearchableSelect'
+import PhoneField from '../components/PhoneField'
 import { useState, useEffect } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { settingsApi } from '../lib/api'
@@ -167,13 +168,11 @@ className="w-full px-4 py-2 rounded-lg border border-border bg-surface"
 <label className="block text-sm font-medium text-foreground mb-1">
                 {t('settings.storePhone')}
               </label>
-              <input
-                type="tel"
-                name="storePhone"
-                value={formData.storePhone}
-                onChange={handleChange}
-className="w-full px-4 py-2 rounded-lg border border-border bg-surface"
-                placeholder="+20 XXX XXX XXXX"
+              <PhoneField
+                id="store-phone"
+                label={t('settings.storePhone')}
+                value={formData.storePhone || ''}
+                onChange={(full) => setFormData(prev => ({ ...prev, storePhone: full }))}
               />
             </div>
           </div>

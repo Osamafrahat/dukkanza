@@ -1,4 +1,5 @@
 import ConfirmModal from '../components/ConfirmModal'
+import PhoneField from '../components/PhoneField'
 import SearchableSelect from '../components/SearchableSelect'
 import { X, Plus, Edit2, Trash2, UserCheck, User, Phone, Mail, Calendar, DollarSign, Shield, Building2 } from 'lucide-react'
 import { useState, useEffect } from 'react'
@@ -407,15 +408,11 @@ className="w-full px-4 py-2 rounded-lg border border-border bg-surface"
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-<label className="block text-sm font-medium text-foreground mb-1">
-                {t('employees.phone')}
-              </label>
-              <input
-                type="tel"
-                name="phone"
+              <PhoneField
+                id="employee-phone"
+                label={t('employees.phone')}
                 value={formData.phone}
-                onChange={handleChange}
-className="w-full px-4 py-2 rounded-lg border border-border bg-surface"
+                onChange={(full) => setFormData(prev => ({ ...prev, phone: full }))}
               />
             </div>
             <div>

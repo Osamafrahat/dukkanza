@@ -127,7 +127,12 @@ router.post('/signup', [
     .matches(/[a-z]/).withMessage('Password must contain at least one lowercase letter')
     .matches(/[A-Z]/).withMessage('Password must contain at least one uppercase letter')
     .matches(/[0-9]/).withMessage('Password must contain at least one number'),
-  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
+  // Optional: the signup form labels both fields optional, and the form omits
+  // them entirely when blank — which is exactly why these need `optional()`:
+  // a bare isEmail() rejects a MISSING key, so "leave it blank" used to 400.
+  body('email').optional({ values: 'falsy' }).trim().isEmail().withMessage('Valid email is required').normalizeEmail(),
+  body('phone').optional({ values: 'falsy' }).trim()
+    .matches(/^\+?[0-9]{7,15}$/).withMessage('Valid phone number required'),
   body('fullName').trim().notEmpty().withMessage('Full name is required'),
 ], async (req, res) => {
   try {
@@ -136,7 +141,7 @@ router.post('/signup', [
       return res.status(400).json({ error: errors.array()[0].msg })
     }
 
-    const { storeName, username, password, email, fullName } = req.body
+    const { storeName, username, password, email, fullName, phone } = req.body
 
     const { data: existingUser } = await supabase
       .from('users')
@@ -148,14 +153,18 @@ router.post('/signup', [
       return res.status(400).json({ error: 'Username already exists' })
     }
 
-    const { data: existingEmail } = await supabase
-      .from('users')
-      .select('id')
-      .eq('email', email)
-      .single()
+    // Only query for duplicates when an email was actually given: eq() with
+    // undefined would not be a meaningful lookup.
+    if (email) {
+      const { data: existingEmail } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', email)
+        .single()
 
-    if (existingEmail) {
-      return res.status(400).json({ error: 'Email already exists' })
+      if (existingEmail) {
+        return res.status(400).json({ error: 'Email already exists' })
+      }
     }
 
     const baseSlug = generateSlug(storeName)
@@ -187,7 +196,8 @@ router.post('/signup', [
         username,
         password: hashedPassword,
         full_name: fullName,
-        email,
+        email: email || null,
+        phone: phone || null,
         role: 'MANAGER',
         permissions: JSON.stringify([
           'dashboard_view', 'pos_access', 'inventory_view', 'inventory_edit',
@@ -225,9 +235,13 @@ router.post('/signup', [
     }
 
     // Onboarding email: fire-and-forget, never blocks or fails signup.
-    sendWelcomeEmail({ to: email, name: fullName, storeName, trial: true }).catch((err) =>
-      console.error('[EMAIL] Welcome failed:', err.message)
-    )
+    // Skipped when the (optional) email was left blank — there is no address
+    // to send to, and Resend would only reject the call.
+    if (email) {
+      sendWelcomeEmail({ to: email, name: fullName, storeName, trial: true }).catch((err) =>
+        console.error('[EMAIL] Welcome failed:', err.message)
+      )
+    }
 
     // Operator push - same fire-and-forget contract as the email above.
     // storeName/username are user-supplied; notifyOperator escapes them.
