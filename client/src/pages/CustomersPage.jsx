@@ -1,10 +1,11 @@
 import ConfirmModal from '../components/ConfirmModal'
+import CsvImportModal from '../components/CsvImportModal'
 import SearchableSelect from '../components/SearchableSelect'
 import { useState, useEffect } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { useUserStore, PERMISSIONS } from '../stores/userStore'
 import { customersApi, ordersApi } from '../lib/api'
-import { X, Plus, Edit2, Trash2, User, Phone, Mail, MapPin, Star, ChevronDown, ChevronRight, ShoppingCart, Receipt, Calendar, CreditCard, Package } from 'lucide-react'
+import { X, Plus, Edit2, Trash2, User, Phone, Mail, MapPin, Star, ChevronDown, ChevronRight, ShoppingCart, Receipt, Calendar, CreditCard, Package, Upload } from 'lucide-react'
 
 export default function CustomersPage() {
   const { t, toastSuccess, toastError } = useAppStore()
@@ -13,6 +14,7 @@ export default function CustomersPage() {
   const [customers, setCustomers] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   const [editingCustomer, setEditingCustomer] = useState(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -40,6 +42,14 @@ export default function CustomersPage() {
   const handleSearch = (e) => {
     e.preventDefault()
     fetchCustomers()
+  }
+
+  // CSV import: batch upsert, refresh the list, hand the per-row report to
+  // the modal (rejections surface there, not as a toast).
+  const handleImportCustomers = async (items) => {
+    const res = await customersApi.importCsv(items)
+    fetchCustomers()
+    return res.data
   }
 
   const handleEdit = (customer) => {
@@ -101,16 +111,25 @@ export default function CustomersPage() {
 <p className="text-muted">{t('customers.subtitle')}</p>
         </div>
         {canEdit && (
-          <button
-            onClick={() => {
-              setEditingCustomer(null)
-              setShowForm(true)
-            }}
-className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hover:bg-primary-700"
-          >
-            <Plus className="w-4 h-4" />
-            {t('customers.addCustomer')}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setShowImport(true)}
+              className="flex items-center gap-2 px-4 py-2.5 bg-surface-tertiary rounded-lg bg-surface-hover min-h-[44px]"
+            >
+              <Upload className="w-4 h-4" />
+              <span className="hidden sm:inline">{t('importCsv.button')}</span>
+            </button>
+            <button
+              onClick={() => {
+                setEditingCustomer(null)
+                setShowForm(true)
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hover:bg-primary-700 min-h-[44px]"
+            >
+              <Plus className="w-4 h-4" />
+              {t('customers.addCustomer')}
+            </button>
+          </div>
         )}
       </div>
 
@@ -210,6 +229,14 @@ className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-m
           ))}
         </div>
       )}
+
+      {/* CSV Import Modal */}
+      <CsvImportModal
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        entity="customers"
+        onImport={handleImportCustomers}
+      />
 
       {/* Customer Form Modal */}
       {showForm && (

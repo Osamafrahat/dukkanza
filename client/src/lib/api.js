@@ -120,6 +120,8 @@ export const productsApi = {
   update: (id, data) => api.put(`/products/${id}`, data),
   delete: (id) => api.delete(`/products/${id}`),
   getByBarcode: (barcode) => api.get(`/products/barcode/${barcode}`),
+  // Bulk CSV import: one request for the whole file, per-row report back
+  importCsv: (items) => api.post('/products/import', { items }),
 }
 
 // Categories API
@@ -164,6 +166,7 @@ export const suppliersApi = {
   create: (data) => api.post('/suppliers', data),
   update: (id, data) => api.put(`/suppliers/${id}`, data),
   delete: (id) => api.delete(`/suppliers/${id}`),
+  importCsv: (items) => api.post('/suppliers/import', { items }),
 }
 
 // Supplier advances (prepayments) API — manager-gated server-side
@@ -214,6 +217,7 @@ export const customersApi = {
   create: (data) => api.post('/customers', data),
   update: (id, data) => api.put(`/customers/${id}`, data),
   delete: (id) => api.delete(`/customers/${id}`),
+  importCsv: (items) => api.post('/customers/import', { items }),
 }
 
 // Employees API

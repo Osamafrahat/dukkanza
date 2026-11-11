@@ -1,5 +1,6 @@
 import ConfirmModal from '../components/ConfirmModal'
-import { Plus, Package, Tag, Printer, X } from 'lucide-react'
+import CsvImportModal from '../components/CsvImportModal'
+import { Plus, Package, Tag, Printer, X, Upload } from 'lucide-react'
 import InventoryPrintSheet from '../components/inventory/InventoryPrintSheet'
 import BarcodePrinter from '../components/BarcodePrinter'
 import CategoryManager from '../components/inventory/CategoryManager'
@@ -22,6 +23,7 @@ export default function InventoryPage() {
   const [activeTab, setActiveTab] = useState('products')
   const [barcodeProduct, setBarcodeProduct] = useState(null)
   const [showPrintSheet, setShowPrintSheet] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   const [suppliers, setSuppliers] = useState([])
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleting, setDeleting] = useState(false)
@@ -92,6 +94,14 @@ export default function InventoryPage() {
     }
   }
 
+  // CSV import: run the batch, refresh the list behind the modal, hand the
+  // per-row report back to the modal for display (rejections surface there).
+  const handleImportProducts = async (items) => {
+    const res = await productsApi.importCsv(items)
+    fetchData()
+    return res.data
+  }
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -115,6 +125,15 @@ className="flex items-center gap-2 px-4 py-2.5 bg-surface-tertiary rounded-lg bg
             >
               <Tag className="w-4 h-4" />
               <span className="hidden sm:inline">{t('inventory.categories')}</span>
+            </button>
+          )}
+          {canEdit && (
+            <button
+              onClick={() => setShowImport(true)}
+              className="flex items-center gap-2 px-4 py-2.5 bg-surface-tertiary rounded-lg bg-surface-hover min-h-[44px]"
+            >
+              <Upload className="w-4 h-4" />
+              <span className="hidden sm:inline">{t('importCsv.button')}</span>
             </button>
           )}
           {canEdit && (
@@ -221,6 +240,14 @@ className="p-2.5 rounded-lg bg-surface-hover min-w-[44px] min-h-[44px] flex item
           </div>
         </div>
       )}
+      {/* CSV Import Modal */}
+      <CsvImportModal
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        entity="products"
+        onImport={handleImportProducts}
+      />
+
       <ConfirmModal
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}

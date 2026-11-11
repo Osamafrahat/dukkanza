@@ -1,5 +1,6 @@
 import ConfirmModal from '../components/ConfirmModal'
-import { X, Plus, Edit2, Trash2, Truck, Phone, Mail, MapPin, DollarSign, Wallet } from 'lucide-react'
+import CsvImportModal from '../components/CsvImportModal'
+import { X, Plus, Edit2, Trash2, Truck, Phone, Mail, MapPin, DollarSign, Wallet, Upload } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { useUserStore, PERMISSIONS } from '../stores/userStore'
@@ -12,6 +13,7 @@ export default function SuppliersPage() {
   const [suppliers, setSuppliers] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   const [editingSupplier, setEditingSupplier] = useState(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState(null)
@@ -39,6 +41,14 @@ export default function SuppliersPage() {
   const handleEdit = (supplier) => {
     setEditingSupplier(supplier)
     setShowForm(true)
+  }
+
+  // CSV import: batch upsert, refresh the list, hand the per-row report to
+  // the modal (rejections surface there, not as a toast).
+  const handleImportSuppliers = async (items) => {
+    const res = await suppliersApi.importCsv(items)
+    fetchSuppliers()
+    return res.data
   }
 
   const handleDelete = async (id) => {
@@ -126,16 +136,25 @@ export default function SuppliersPage() {
 <p className="text-muted">{t('suppliers.subtitle')}</p>
         </div>
         {canEdit && (
-          <button
-            onClick={() => {
-              setEditingSupplier(null)
-              setShowForm(true)
-            }}
-className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hover:bg-primary-700"
-          >
-            <Plus className="w-4 h-4" />
-            {t('suppliers.addSupplier')}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setShowImport(true)}
+              className="flex items-center gap-2 px-4 py-2.5 bg-surface-tertiary rounded-lg bg-surface-hover min-h-[44px]"
+            >
+              <Upload className="w-4 h-4" />
+              <span className="hidden sm:inline">{t('importCsv.button')}</span>
+            </button>
+            <button
+              onClick={() => {
+                setEditingSupplier(null)
+                setShowForm(true)
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hover:bg-primary-700 min-h-[44px]"
+            >
+              <Plus className="w-4 h-4" />
+              {t('suppliers.addSupplier')}
+            </button>
+          </div>
         )}
       </div>
 
@@ -248,6 +267,14 @@ className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-m
           ))}
         </div>
       )}
+
+      {/* CSV Import Modal */}
+      <CsvImportModal
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        entity="suppliers"
+        onImport={handleImportSuppliers}
+      />
 
       {/* Supplier Form Modal */}
       {showForm && (

@@ -4,7 +4,9 @@ import supabase from '../db/supabase.js'
 import { authenticateToken, requirePermission } from '../middleware/auth.js'
 import { checkTenantLimits } from '../middleware/limits.js'
 import { sanitizeSearch } from '../helpers/search.js'
+import { cleanText, cleanNum } from '../helpers/importClean.js'
 import { adjustStock, overlayBranchStock } from '../services/branchStock.js'
+import { resolveLimit, isUnlimited } from '../services/planLimits.js'
 
 const router = Router()
 
@@ -203,6 +205,268 @@ router.post('/', authenticateToken, requirePermission('inventory_edit'), checkTe
     }
 
     res.status(201).json(data)
+  } catch (err) {
+    next(err)
+  }
+})
+
+// Bulk CSV import (upsert). One request for the whole file with a
+// per-row report, instead of one browser round-trip per row.
+//
+// Match keys: SKU first, then barcode — a row hitting either updates that
+// product; anything else is created. Identity columns are match keys only,
+// never rewrite targets (writing another row's SKU here would collide with
+// the unique checks the single-create route performs).
+//
+// Deliberately NOT behind checkTenantLimits: that middleware 403s the
+// whole batch the moment the tenant sits at its product cap — which would
+// also block a pure-update import. Headroom for NEW rows is computed once
+// below and rows past the cap report limit_reached, so a partial import
+// is explicit instead of fatal.
+router.post('/import', authenticateToken, requirePermission('inventory_edit'), [
+  body('items').isArray({ min: 1 }).withMessage('items must be a non-empty array'),
+  body('items').isArray({ max: 2000 }).withMessage('Too many rows (max 2000 per import)'),
+], validate, async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenantId
+    const items = req.body.items
+    const errors = []
+    let created = 0
+    let updated = 0
+    let categoriesCreated = 0
+    let suppliersCreated = 0
+
+    // Headroom for NEW rows only. Mirrors limits.js fail-open semantics:
+    // if the cap cannot be read, import anyway rather than drop data.
+    let headroom = Infinity
+    try {
+      const { data: tenant } = await supabase
+        .from('tenants')
+        .select('subscription_tier, max_products')
+        .eq('id', tenantId)
+        .single()
+      const counted = await supabase
+        .from('products')
+        .select('*', { count: 'exact', head: true })
+        .eq('tenant_id', tenantId)
+      if (!counted.error) {
+        const limit = resolveLimit('products', tenant?.subscription_tier || 'free', tenant?.max_products)
+        if (!isUnlimited(limit)) {
+          headroom = Math.max(0, Number(limit) - (counted.count || 0))
+        }
+      }
+    } catch (capErr) {
+      console.error('[PRODUCTS] import: plan cap lookup failed, continuing uncapped:', capErr.message)
+    }
+
+    const { data: existingProducts, error: listErr } = await supabase
+      .from('products')
+      .select('id, name, sku, barcode, stock_quantity')
+      .eq('tenant_id', tenantId)
+    if (listErr) throw listErr
+    const bySku = new Map()
+    const byBarcode = new Map()
+    const rememberProduct = (p) => {
+      if (p.sku) bySku.set(p.sku.trim().toLowerCase(), p)
+      if (p.barcode) byBarcode.set(p.barcode.trim(), p)
+    }
+    for (const p of existingProducts || []) rememberProduct(p)
+
+    const { data: existingCategories, error: catErr } = await supabase
+      .from('categories')
+      .select('id, name')
+      .eq('tenant_id', tenantId)
+    if (catErr) throw catErr
+    const catByName = new Map(
+      (existingCategories || []).map((c) => [cleanText(c.name).toLowerCase(), c]),
+    )
+    // A category column full of group names should not need a separate
+    // setup pass — create on first sight, resolve thereafter.
+    const resolveCategory = async (raw) => {
+      const name = cleanText(raw)
+      if (!name) return null
+      const key = name.toLowerCase()
+      const hit = catByName.get(key)
+      if (hit) return hit.id
+      const { data: cat, error } = await supabase
+        .from('categories')
+        .insert({ tenant_id: tenantId, name })
+        .select('id, name')
+        .single()
+      if (error || !cat) {
+        console.error('[PRODUCTS] import: category create failed:', error?.message)
+        return null
+      }
+      catByName.set(key, cat)
+      categoriesCreated++
+      return cat.id
+    }
+
+    const { data: existingSuppliers, error: supErr } = await supabase
+      .from('suppliers')
+      .select('id, name, account_code')
+      .eq('tenant_id', tenantId)
+    if (supErr) throw supErr
+    const supByName = new Map(
+      (existingSuppliers || []).map((s) => [cleanText(s.name).toLowerCase(), s]),
+    )
+    const supById = new Map((existingSuppliers || []).map((s) => [s.id, s]))
+    // Same create-on-sight contract as categories, plus the per-supplier
+    // AP account single-create assigns (2010-S<id>) — without it the new
+    // supplier would silently sit outside AP tracking.
+    const resolveSupplier = async (raw) => {
+      const name = cleanText(raw)
+      if (!name) return null
+      const key = name.toLowerCase()
+      const hit = supByName.get(key)
+      if (hit) return hit.id
+      const { data: sup, error } = await supabase
+        .from('suppliers')
+        .insert({ tenant_id: tenantId, name })
+        .select('id, name, account_code')
+        .single()
+      if (error || !sup) {
+        console.error('[PRODUCTS] import: supplier create failed:', error?.message)
+        return null
+      }
+      const accountCode = `2010-S${sup.id}`
+      await supabase
+        .from('suppliers')
+        .update({ account_code: accountCode })
+        .eq('id', sup.id)
+        .eq('tenant_id', tenantId)
+      sup.account_code = accountCode
+      supByName.set(key, sup)
+      supById.set(sup.id, sup)
+      suppliersCreated++
+      return sup.id
+    }
+
+    // First occurrence of a SKU/barcode owns the key for this file;
+    // later duplicates are reported, not silently folded together.
+    const seenSkus = new Set()
+    const seenBarcodes = new Set()
+
+    for (let i = 0; i < items.length; i++) {
+      const row = items[i] && typeof items[i] === 'object' ? items[i] : {}
+      // _row = the file line the client saw (header is line 1), so the
+      // error points where the user is looking; fall back to index.
+      const rowNo = Number.isInteger(row._row) && row._row > 0 ? row._row : i + 1
+      try {
+        const name = cleanText(row.name)
+        if (!name) { errors.push({ row: rowNo, error: 'name_required' }); continue }
+        const price = cleanNum(row.price)
+        if (price === null || price < 0) { errors.push({ row: rowNo, error: 'price_invalid' }); continue }
+        const costProvided = row.cost_price !== undefined && row.cost_price !== null && row.cost_price !== ''
+        const costPrice = costProvided ? cleanNum(row.cost_price) : 0
+        if (costPrice === null || costPrice < 0) { errors.push({ row: rowNo, error: 'cost_invalid' }); continue }
+        if (costPrice > price) { errors.push({ row: rowNo, error: 'cost_exceeds_price' }); continue }
+        const stockProvided = row.stock_quantity !== undefined && row.stock_quantity !== null && row.stock_quantity !== ''
+        const stockValue = stockProvided ? cleanNum(row.stock_quantity) : null
+        if (stockProvided && (stockValue === null || stockValue < 0)) { errors.push({ row: rowNo, error: 'stock_invalid' }); continue }
+        const thresholdProvided = row.low_stock_threshold !== undefined && row.low_stock_threshold !== null && row.low_stock_threshold !== ''
+        const threshold = thresholdProvided ? cleanNum(row.low_stock_threshold) : null
+        if (thresholdProvided && (threshold === null || threshold < 0)) { errors.push({ row: rowNo, error: 'threshold_invalid' }); continue }
+
+        const sku = cleanText(row.sku, 50)
+        const barcode = cleanText(row.barcode, 100)
+        const skuKey = sku.toLowerCase()
+        if (sku && seenSkus.has(skuKey)) { errors.push({ row: rowNo, error: 'sku_in_file_dup' }); continue }
+        if (barcode && seenBarcodes.has(barcode)) { errors.push({ row: rowNo, error: 'barcode_in_file_dup' }); continue }
+
+        const match = (sku && bySku.get(skuKey)) || (barcode && byBarcode.get(barcode)) || null
+
+        if (match) {
+          if (sku) seenSkus.add(skuKey)
+          if (barcode) seenBarcodes.add(barcode)
+          // SKU/barcode are intentionally absent: they identify the row,
+          // rewriting them could collide with another product's identity.
+          const patch = { name, price, cost_price: costPrice, updated_at: new Date().toISOString() }
+          if ('category' in row) patch.category_id = await resolveCategory(row.category)
+          if ('supplier' in row) patch.supplier_id = await resolveSupplier(row.supplier)
+          if (thresholdProvided) patch.low_stock_threshold = threshold
+          const { error } = await supabase
+            .from('products')
+            .update(patch)
+            .eq('id', match.id)
+            .eq('tenant_id', tenantId)
+          if (error) {
+            console.error('[PRODUCTS] import: update failed:', error.message)
+            errors.push({ row: rowNo, error: 'update_failed' })
+            continue
+          }
+          updated++
+          // Set-to semantics: the CSV states the shelf count, so the
+          // adjustment is the difference from what's recorded. adjustStock
+          // keeps the per-branch row and the total in sync and logs its
+          // own failure — the product just keeps its old count.
+          const currentStock = Number(match.stock_quantity) || 0
+          if (stockProvided && stockValue !== currentStock) {
+            await adjustStock({ tenantId, branchId: req.branchId, productId: match.id, delta: stockValue - currentStock })
+          }
+          continue
+        }
+
+        if (headroom <= 0) { errors.push({ row: rowNo, error: 'limit_reached' }); continue }
+        if (sku) seenSkus.add(skuKey)
+        if (barcode) seenBarcodes.add(barcode)
+
+        const categoryId = 'category' in row ? await resolveCategory(row.category) : null
+        const supplierId = 'supplier' in row ? await resolveSupplier(row.supplier) : null
+        const { data, error } = await supabase
+          .from('products')
+          .insert({
+            tenant_id: tenantId,
+            name,
+            sku: sku || null,
+            barcode: barcode || null,
+            category_id: categoryId,
+            supplier_id: supplierId,
+            price,
+            cost_price: costPrice,
+            // Seeded to 0 like single-create: initial stock goes through
+            // adjustStock so the per-branch row and the total agree from
+            // day one (see the comment in the create route above).
+            stock_quantity: 0,
+            low_stock_threshold: thresholdProvided ? threshold : 10,
+          })
+          .select()
+          .single()
+        if (error || !data) {
+          console.error('[PRODUCTS] import: insert failed:', error?.message)
+          errors.push({ row: rowNo, error: 'insert_failed' })
+          continue
+        }
+        created++
+        headroom--
+        rememberProduct(data)
+        const initialStock = stockValue || 0
+        if (initialStock > 0) {
+          const adjusted = await adjustStock({ tenantId, branchId: req.branchId, productId: data.id, delta: initialStock })
+          if (adjusted !== null) data.stock_quantity = adjusted
+          else console.error('[PRODUCTS] import: initial stock seed failed for product', data.id)
+        }
+        // Same AP journal contract as single-create: opening stock from a
+        // known supplier owes that supplier.
+        if (data.stock_quantity > 0 && costPrice > 0 && supplierId) {
+          try {
+            const { postStockReceiveJournal } = await import('../services/accountingEngine.js')
+            const movement = { id: data.id, quantity: data.stock_quantity }
+            await postStockReceiveJournal(movement, { name: data.name, cost_price: costPrice }, supById.get(supplierId) || null, tenantId)
+          } catch (accErr) {
+            console.error('Accounting auto-post (CSV import) failed:', accErr.message)
+          }
+        }
+      } catch (rowErr) {
+        console.error('[PRODUCTS] import: row failed:', rowErr.message)
+        errors.push({ row: rowNo, error: 'insert_failed' })
+      }
+    }
+
+    if (created || updated) {
+      req.logActivity({ action: 'imported', entity_type: 'product', entity_name: `CSV import: ${created} created, ${updated} updated` })
+    }
+    res.json({ created, updated, errors, categories_created: categoriesCreated, suppliers_created: suppliersCreated })
   } catch (err) {
     next(err)
   }
