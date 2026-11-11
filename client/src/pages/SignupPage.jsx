@@ -17,6 +17,8 @@ export default function SignupPage() {
   const [fullName, setFullName] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  // Confirm ("retype") password — client-side only; the server never sees it.
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [email, setEmail] = useState('')
   // Full number ('+201012345678'); PhoneField splits it into dial code +
   // digits while typing, so signup stores the exact shape the customer and
@@ -68,6 +70,11 @@ export default function SignupPage() {
 
     if (!isPasswordValid) {
       setError(t('signup.errorRequirements') || 'Password does not meet requirements')
+      return
+    }
+
+    if (password !== confirmPassword) {
+      setError(t('signup.passwordMismatch') || 'Passwords do not match')
       return
     }
 
@@ -294,6 +301,31 @@ export default function SignupPage() {
                       ))}
                     </div>
                   </div>
+                )}
+              </div>
+
+              {/* Retype field: mirrors the main password's visibility toggle
+                  (same showPassword state) so one eye button reveals both. */}
+              <div>
+                <label htmlFor="signup-confirm-password" className="block text-sm font-medium text-foreground mb-2">
+                  {t('signup.confirmPassword') || 'Confirm Password'} *
+                </label>
+                <InputGroup fullWidth>
+                  <InputGroup.Prefix>
+                    <Lock className="size-5 text-muted" />
+                  </InputGroup.Prefix>
+                  <InputGroup.Input
+                    id="signup-confirm-password"
+                    type={showPassword ? 'text' : 'password'}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="••••••••"
+                    autoComplete="new-password"
+                    required
+                  />
+                </InputGroup>
+                {confirmPassword && password !== confirmPassword && (
+                  <p className="mt-1 text-xs text-danger">{t('signup.passwordMismatch') || 'Passwords do not match'}</p>
                 )}
               </div>
 
