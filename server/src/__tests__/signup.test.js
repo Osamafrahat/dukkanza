@@ -1,12 +1,11 @@
-// Signup contract: optional phone + genuinely-optional email.
+// Signup contract: required email, optional phone.
 //
-// Why this file exists: the signup form has always labeled email "(optional)"
-// and omits the key entirely when blank — but the validator required it, so
-// leaving it blank returned 400 "Valid email is required" instead of
-// creating the store. The phone field is new, so its contract (stored in
+// Why this file exists: the phone field is new, so its contract (stored in
 // users.phone in the same '+20...' shape the app writes everywhere, blank
-// stays NULL, malformed rejected up front) is pinned here alongside the
-// email fix it was built with. Everything else in the route is mocked to
+// stays NULL, malformed rejected up front) is pinned here. Email is a hard
+// requirement by product decision — the tests below pin that a missing OR
+// malformed email 400s before any write, and that a valid one is stored
+// normalized and welcome-mailed. Everything else in the route is mocked to
 // the two tables signup actually writes.
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals'
@@ -95,11 +94,11 @@ const app = express()
 app.use(express.json())
 app.use('/api/auth', authRouter)
 
-// Signup's own write order: users.username lookup -> (email lookup) ->
+// Signup's own write order: users.username lookup -> users.email lookup ->
 // tenants slug lookup -> tenants insert -> users insert -> seeding.
-const queueSignup = ({ withEmail = false, username = 'jane', tenantId = 5, userId = 11 } = {}) => {
+const queueSignup = ({ username = 'jane', tenantId = 5, userId = 11 } = {}) => {
   enqueue('users', { data: null, error: null }) // username free
-  if (withEmail) enqueue('users', { data: null, error: null }) // email free
+  enqueue('users', { data: null, error: null }) // email free
   enqueue('tenants', { data: null, error: null }) // slug free
   enqueue('tenants', { data: { id: tenantId }, error: null })
   enqueue('users', {
@@ -108,7 +107,7 @@ const queueSignup = ({ withEmail = false, username = 'jane', tenantId = 5, userI
   })
 }
 
-const baseBody = { storeName: 'Test Store', username: 'jane', password: 'Abcdefg1', fullName: 'Full Name' }
+const baseBody = { storeName: 'Test Store', username: 'jane', password: 'Abcdefg1', fullName: 'Full Name', email: 'jane@example.com' }
 
 const usersInserts = () => writes.filter((w) => w.table === 'users')
 
@@ -118,8 +117,8 @@ beforeEach(() => {
   jest.clearAllMocks()
 })
 
-describe('POST /api/auth/signup — optional fields', () => {
-  it('creates the store with neither email nor phone (the form labels both optional)', async () => {
+describe('POST /api/auth/signup — email required, phone optional', () => {
+  it('creates the store with the required email and no phone', async () => {
     queueSignup()
 
     const res = await request(app).post('/api/auth/signup').send(baseBody)
@@ -127,14 +126,22 @@ describe('POST /api/auth/signup — optional fields', () => {
     expect(res.status).toBe(201)
     expect(res.body.user).toMatchObject({ username: 'jane', role: 'MANAGER' })
     expect(usersInserts()).toHaveLength(1)
-    expect(usersInserts()[0].payload).toMatchObject({ email: null, phone: null })
-    // Nothing to welcome-mail to; the call must be skipped, not fired blind.
-    expect(sendWelcomeEmailSpy).not.toHaveBeenCalled()
+    expect(usersInserts()[0].payload).toMatchObject({ email: 'jane@example.com', phone: null })
+    expect(sendWelcomeEmailSpy).toHaveBeenCalledTimes(1)
+    expect(sendWelcomeEmailSpy.mock.calls[0][0]).toMatchObject({ to: 'jane@example.com' })
     expect(notifyOperatorSpy).toHaveBeenCalledTimes(1)
   })
 
+  it('rejects a missing email before touching the database', async () => {
+    const { email: _omitted, ...withoutEmail } = baseBody
+    const res = await request(app).post('/api/auth/signup').send(withoutEmail)
+    expect(res.status).toBe(400)
+    expect(res.body.error).toBe('Valid email is required')
+    expect(writes).toHaveLength(0)
+  })
+
   it('stores the phone in the canonical +<code><digits> shape and emails the welcome mail', async () => {
-    queueSignup({ withEmail: true, username: 'bob', tenantId: 6, userId: 12 })
+    queueSignup({ username: 'bob', tenantId: 6, userId: 12 })
 
     const res = await request(app).post('/api/auth/signup').send({
       ...baseBody,
@@ -161,7 +168,7 @@ describe('POST /api/auth/signup — optional fields', () => {
     expect(writes).toHaveLength(0)
   })
 
-  it('still rejects a malformed email when one IS provided', async () => {
+  it('rejects a malformed email', async () => {
     const res = await request(app).post('/api/auth/signup').send({ ...baseBody, email: 'not-an-email' })
     expect(res.status).toBe(400)
     expect(res.body.error).toBe('Valid email is required')

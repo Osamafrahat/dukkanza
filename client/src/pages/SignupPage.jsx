@@ -84,7 +84,7 @@ export default function SignupPage() {
         fullName,
         username,
         password,
-        email: email || undefined,
+        email,
         phone: phone || undefined,
       })
 
@@ -221,7 +221,7 @@ export default function SignupPage() {
 
               <div>
                 <label htmlFor="signup-email" className="block text-sm font-medium text-foreground mb-2">
-                  {t('signup.email') || 'Email'} ({t('signup.optional') || 'optional'})
+                  {t('signup.email') || 'Email'} *
                 </label>
                 <InputGroup fullWidth>
                   <InputGroup.Prefix>
@@ -234,6 +234,7 @@ export default function SignupPage() {
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder={t('signup.emailPlaceholder') || 'john@example.com'}
                     autoComplete="email"
+                    required
                   />
                 </InputGroup>
               </div>

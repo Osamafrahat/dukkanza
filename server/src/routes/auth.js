@@ -127,10 +127,10 @@ router.post('/signup', [
     .matches(/[a-z]/).withMessage('Password must contain at least one lowercase letter')
     .matches(/[A-Z]/).withMessage('Password must contain at least one uppercase letter')
     .matches(/[0-9]/).withMessage('Password must contain at least one number'),
-  // Optional: the signup form labels both fields optional, and the form omits
-  // them entirely when blank — which is exactly why these need `optional()`:
-  // a bare isEmail() rejects a MISSING key, so "leave it blank" used to 400.
-  body('email').optional({ values: 'falsy' }).trim().isEmail().withMessage('Valid email is required').normalizeEmail(),
+  // Email is a hard requirement (product decision); phone stays optional.
+  // A missing key fails this chain with the same message as a malformed one,
+  // so the form's required attribute and this validator agree.
+  body('email').trim().isEmail().withMessage('Valid email is required').normalizeEmail(),
   body('phone').optional({ values: 'falsy' }).trim()
     .matches(/^\+?[0-9]{7,15}$/).withMessage('Valid phone number required'),
   body('fullName').trim().notEmpty().withMessage('Full name is required'),
@@ -153,18 +153,14 @@ router.post('/signup', [
       return res.status(400).json({ error: 'Username already exists' })
     }
 
-    // Only query for duplicates when an email was actually given: eq() with
-    // undefined would not be a meaningful lookup.
-    if (email) {
-      const { data: existingEmail } = await supabase
-        .from('users')
-        .select('id')
-        .eq('email', email)
-        .single()
+    const { data: existingEmail } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', email)
+      .single()
 
-      if (existingEmail) {
-        return res.status(400).json({ error: 'Email already exists' })
-      }
+    if (existingEmail) {
+      return res.status(400).json({ error: 'Email already exists' })
     }
 
     const baseSlug = generateSlug(storeName)
@@ -235,13 +231,9 @@ router.post('/signup', [
     }
 
     // Onboarding email: fire-and-forget, never blocks or fails signup.
-    // Skipped when the (optional) email was left blank — there is no address
-    // to send to, and Resend would only reject the call.
-    if (email) {
-      sendWelcomeEmail({ to: email, name: fullName, storeName, trial: true }).catch((err) =>
-        console.error('[EMAIL] Welcome failed:', err.message)
-      )
-    }
+    sendWelcomeEmail({ to: email, name: fullName, storeName, trial: true }).catch((err) =>
+      console.error('[EMAIL] Welcome failed:', err.message)
+    )
 
     // Operator push - same fire-and-forget contract as the email above.
     // storeName/username are user-supplied; notifyOperator escapes them.
