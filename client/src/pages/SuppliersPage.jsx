@@ -1,11 +1,11 @@
 import ConfirmModal from '../components/ConfirmModal'
 import CsvImportModal from '../components/CsvImportModal'
 import PhoneField from '../components/PhoneField'
-import { X, Plus, Edit2, Trash2, Truck, Phone, Mail, MapPin, DollarSign, Wallet, Upload } from 'lucide-react'
+import { X, Plus, Edit2, Trash2, Truck, Phone, Mail, MapPin, DollarSign, Upload } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { useUserStore, PERMISSIONS } from '../stores/userStore'
-import { suppliersApi, supplierAdvancesApi } from '../lib/api'
+import { suppliersApi } from '../lib/api'
 
 export default function SuppliersPage() {
   const { t, toastSuccess, toastError } = useAppStore()
@@ -19,9 +19,6 @@ export default function SuppliersPage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleting, setDeleting] = useState(false)
-  const [advanceTarget, setAdvanceTarget] = useState(null)
-  const [advanceForm, setAdvanceForm] = useState({ amount: '', method: 'cash', notes: '' })
-  const [isAdvancing, setIsAdvancing] = useState(false)
 
   useEffect(() => {
     fetchSuppliers()
@@ -92,33 +89,6 @@ export default function SuppliersPage() {
   const formatAmount = (val) => {
     const num = parseFloat(val) || 0
     return num.toLocaleString('en-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  }
-
-  const openAdvanceModal = (supplier) => {
-    setAdvanceTarget(supplier)
-    setAdvanceForm({ amount: '', method: 'cash', notes: '' })
-  }
-
-  const handleAdvanceSubmit = async () => {
-    const amount = parseFloat(advanceForm.amount)
-    if (!amount || amount <= 0) return toastError(t('suppliers.advanceInvalidAmount') || 'Enter an amount greater than 0')
-    if (isAdvancing) return
-    setIsAdvancing(true)
-    try {
-      await supplierAdvancesApi.create({
-        supplier_id: advanceTarget.id,
-        amount,
-        method: advanceForm.method,
-        notes: advanceForm.notes || null,
-      })
-      toastSuccess(t('suppliers.advanceRecorded') || 'Advance recorded')
-      setAdvanceTarget(null)
-      fetchSuppliers()
-    } catch (err) {
-      toastError(err.response?.data?.error || t('suppliers.advanceFailed') || 'Failed to record advance')
-    } finally {
-      setIsAdvancing(false)
-    }
   }
 
   if (loading) {
@@ -232,9 +202,9 @@ className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-m
                 </p>
               )}
 
-              {/* AP Balance + Advance */}
-              <div className="mt-3 border-t border-border pt-3 space-y-2">
-                {supplier.account_code && (
+              {/* AP Balance */}
+              {supplier.account_code && (
+                <div className="mt-3 border-t border-border pt-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 text-sm text-muted">
                       <DollarSign className="w-4 h-4" />
@@ -244,26 +214,8 @@ className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-m
                       {formatAmount(supplier.balance)}
                     </span>
                   </div>
-                )}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-sm text-muted">
-                    <Wallet className="w-4 h-4" />
-                    <span>{t('suppliers.advanceBalance')}</span>
-                  </div>
-                  <span className={`text-sm font-bold ${(parseFloat(supplier.advance_available)||0)>0 ?'text-accent':'text-muted'}`}>
-                    {formatAmount(supplier.advance_available)}
-                  </span>
                 </div>
-                {canEdit && (
-                  <button
-                    onClick={() => openAdvanceModal(supplier)}
-                    className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent-soft rounded-lg transition-colors"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    {t('suppliers.recordAdvance')}
-                  </button>
-                )}
-              </div>
+              )}
             </div>
           ))}
         </div>
@@ -289,63 +241,6 @@ className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-m
         />
       )}
 
-      {/* Record Advance Modal */}
-      {advanceTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-bold">{t('suppliers.recordAdvance')}</h3>
-              <button onClick={() => setAdvanceTarget(null)} className="text-muted hover:text-foreground">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <p className="text-sm text-muted">
-              {t('suppliers.advanceModalDesc') || 'Pay an advance to'} <span className="font-medium text-foreground">{advanceTarget.name}</span>
-            </p>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              value={advanceForm.amount}
-              onChange={(e) => setAdvanceForm({ ...advanceForm, amount: e.target.value })}
-              placeholder={`${t('accounting.amount')} (EGP)`}
-              className="w-full px-4 py-2.5 rounded-xl border border-border bg-surface-secondary outline-none ring-focus text-lg font-bold"
-            />
-            <select
-              value={advanceForm.method}
-              onChange={(e) => setAdvanceForm({ ...advanceForm, method: e.target.value })}
-              className="w-full px-4 py-2.5 rounded-xl border border-border bg-surface-secondary outline-none ring-focus"
-            >
-              <option value="cash">{t('accounting.cash')}</option>
-              <option value="bank_transfer">{t('accounting.bankTransfer')}</option>
-              <option value="card">{t('accounting.card')}</option>
-              <option value="check">{t('accounting.check')}</option>
-            </select>
-            <textarea
-              value={advanceForm.notes}
-              onChange={(e) => setAdvanceForm({ ...advanceForm, notes: e.target.value })}
-              placeholder={`${t('common.description')} (${t('accounting.optional')})`}
-              rows={2}
-              className="w-full px-4 py-2.5 rounded-xl border border-border bg-surface-secondary outline-none ring-focus"
-            />
-            <div className="flex gap-3">
-              <button
-                onClick={handleAdvanceSubmit}
-                disabled={isAdvancing}
-                className="flex-1 px-4 py-2.5 bg-accent hover:bg-primary-700 text-white rounded-xl font-medium flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                <Wallet className="w-4 h-4" /> {t('suppliers.recordAdvance')}
-              </button>
-              <button
-                onClick={() => setAdvanceTarget(null)}
-                className="px-4 py-2.5 bg-surface-tertiary rounded-xl font-medium flex items-center gap-2"
-              >
-                <X className="w-4 h-4" /> {t('common.cancel')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       <ConfirmModal
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}

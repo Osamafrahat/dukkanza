@@ -19,10 +19,10 @@
 //                        on seeded opening stock — the same obligations
 //                        single-create upholds.
 //
-// The supabase mock is the queue harness from supplierAdvances.test.js:
-// every await on a query chain consumes ONE queued result per table, so
-// the queue order documents the route's query order. A mis-ordered route
-// fails here with a mismatched payload instead of a silent wrong write.
+// The supabase mock is a queue harness: every await on a query chain
+// consumes ONE queued result per table, so the queue order documents the
+// route's query order. A mis-ordered route fails here with a mismatched
+// payload instead of a silent wrong write.
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals'
 import request from 'supertest'

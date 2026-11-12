@@ -111,15 +111,13 @@ jest.unstable_mockModule('../services/branches.js', () => ({
   resolveBranchParam: jest.fn(async () => ({ value: null, error: null })),
 }))
 
-// Capture the journal instead of writing one. seedChartOfAccounts and
-// reverseJournalEntry are also exported: purchaseOrders.js now pulls in
-// advanceLedger.js, which imports ALL of these names from accountingEngine
-// — an ESM mock missing any one export fails the whole suite at link time.
+// Capture the journal instead of writing one. purchaseOrders.js pulls
+// accountingEngine in dynamically for createJournalEntry — an ESM mock
+// missing a name that ANY module in this graph imports fails the whole
+// suite at link time, so the mock covers exactly what the route consumes.
 const journalSpy = jest.fn(async () => ({ data: { id: 501 }, error: null }))
 jest.unstable_mockModule('../services/accountingEngine.js', () => ({
   createJournalEntry: journalSpy,
-  seedChartOfAccounts: jest.fn(async () => undefined),
-  reverseJournalEntry: jest.fn(async () => ({ id: 502 })),
 }))
 
 const { default: purchaseOrdersRouter } = await import('../routes/purchaseOrders.js')

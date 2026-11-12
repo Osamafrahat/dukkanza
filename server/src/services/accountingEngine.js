@@ -897,8 +897,8 @@ export async function seedChartOfAccounts(tenantId) {
     { code: '1030', name: 'Accounts Receivable', account_type: 'asset' },
     { code: '1050', name: 'Inventory', account_type: 'asset' },
     // Prepayments to suppliers: an advance is money gone out with nothing
-    // owed yet, so it is an asset, not a (negative) payable. Consumed FIFO
-    // against supplier settlements (services/advanceLedger.js).
+    // owed yet, so it is an asset, not a (negative) payable. Kept in the
+    // chart for tenants that already carry a balance here.
     { code: '1150', name: 'Supplier Advances', account_type: 'asset' },
     // Liabilities
     { code: '2010', name: 'Accounts Payable', account_type: 'liability' },

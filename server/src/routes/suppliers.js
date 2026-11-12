@@ -25,27 +25,6 @@ router.get('/', async (req, res, next) => {
 
     if (error) throw error
 
-    // Advance balances (amount - consumed) per supplier. One grouped query
-    // for the whole list. Resilient by design: until the
-    // add-supplier-advances migration has run, the table does not exist and
-    // this fails — every supplier then reports 0 instead of the request
-    // blowing up over an enrichment.
-    let advanceBySupplier = {}
-    try {
-      const { data: advanceRows, error: advanceError } = await supabase
-        .from('supplier_advances')
-        .select('supplier_id, amount, consumed_amount')
-        .eq('tenant_id', req.user?.tenantId)
-      if (!advanceError) {
-        for (const row of advanceRows || []) {
-          const available = parseFloat(row.amount) - parseFloat(row.consumed_amount || 0)
-          advanceBySupplier[row.supplier_id] = (advanceBySupplier[row.supplier_id] || 0) + available
-        }
-      }
-    } catch {
-      advanceBySupplier = {}
-    }
-
     // Enrich with AP balance from accounts table
     const enriched = await Promise.all((data || []).map(async (supplier) => {
       let balance = 0
@@ -61,7 +40,6 @@ router.get('/', async (req, res, next) => {
       return {
         ...supplier,
         balance,
-        advance_available: advanceBySupplier[supplier.id] || 0,
       }
     }))
 
