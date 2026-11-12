@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, cleanup, waitFor } from '@testing-library/react'
+import { render, cleanup, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
 // POSPage touches nine API surfaces plus the IndexedDB cache on mount.
@@ -32,7 +32,7 @@ vi.mock('../lib/offlineDB', () => ({
 }))
 
 import POSPage from '../pages/POSPage'
-import { productsApi, cashShiftsApi } from '../lib/api'
+import { productsApi, cashShiftsApi, customersApi } from '../lib/api'
 
 afterEach(cleanup)
 
@@ -60,5 +60,24 @@ describe('POSPage', () => {
     // Mount effect: product catalogue + own cash box must both be fetched.
     await waitFor(() => expect(productsApi.getAll).toHaveBeenCalled())
     await waitFor(() => expect(cashShiftsApi.getActive).toHaveBeenCalled())
+  })
+
+  it('pre-selects the handed-off customer from ?new=1&customer=<id>', async () => {
+    // Quick-action handoff from the Customers page card.
+    customersApi.getAll.mockResolvedValue({
+      data: [{ id: 9, name: 'Nile Cafe', phone: '+201000000001', loyalty_points: 5 }],
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/pos?new=1&customer=9']}>
+        <POSPage />
+      </MemoryRouter>
+    )
+
+    // The customer panel flips from search box to the selected block.
+    expect(await screen.findByText('Nile Cafe')).toBeTruthy()
+    // The search input is unmounted while a customer is selected — the
+    // panel is in its handoff state, not the idle picker.
+    expect(screen.queryByPlaceholderText('Search customer by name or phone...')).toBeNull()
   })
 })

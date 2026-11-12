@@ -207,6 +207,7 @@ export const usersApi = {
 // Customers API
 export const customersApi = {
   getAll: (params) => api.get('/customers', { params }),
+  overview: () => api.get('/customers/overview'),
   getById: (id) => api.get(`/customers/${id}`),
   create: (data) => api.post('/customers', data),
   update: (id, data) => api.put(`/customers/${id}`, data),

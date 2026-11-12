@@ -39,6 +39,41 @@ router.get('/', async (req, res, next) => {
   }
 })
 
+// Aggregate for the Customers page header: sales created in the last 30
+// days (refunded orders excluded) and outstanding credit (unpaid portion
+// of pending/partial/overdue credit sales). Defined BEFORE /:id so the
+// literal path wins over the param route.
+router.get('/overview', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenantId
+    const since = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+
+    const [ordersRes, creditRes] = await Promise.all([
+      supabase
+        .from('orders')
+        .select('total, is_refunded, created_at')
+        .eq('tenant_id', tenantId)
+        .gte('created_at', since),
+      supabase
+        .from('credit_sales')
+        .select('remaining_amount, status')
+        .eq('tenant_id', tenantId)
+        .in('status', ['pending', 'partial', 'overdue']),
+    ])
+
+    const sales30d = (ordersRes.data || [])
+      .filter((o) => !o.is_refunded)
+      .reduce((sum, o) => sum + (parseFloat(o.total) || 0), 0)
+
+    const outstandingCredit = (creditRes.data || [])
+      .reduce((sum, cs) => sum + (parseFloat(cs.remaining_amount) || 0), 0)
+
+    res.json({ sales_30d: sales30d, outstanding_credit: outstandingCredit })
+  } catch (err) {
+    next(err)
+  }
+})
+
 // Get customer by ID
 router.get('/:id', [
   param('id').isNumeric().withMessage('Invalid customer ID'),

@@ -1,17 +1,20 @@
 import ConfirmModal from '../components/ConfirmModal'
 import CsvImportModal from '../components/CsvImportModal'
 import PhoneField from '../components/PhoneField'
+import SearchableSelect from '../components/SearchableSelect'
 import { parseFullPhone } from '../lib/phone'
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { useUserStore, PERMISSIONS } from '../stores/userStore'
-import { customersApi, ordersApi } from '../lib/api'
-import { X, Plus, Edit2, Trash2, User, Phone, Mail, MapPin, Star, ChevronDown, ChevronRight, ShoppingCart, Receipt, Calendar, CreditCard, Package, Upload } from 'lucide-react'
+import { customersApi, customerStatementsApi, subscriptionsApi } from '../lib/api'
+import { X, Plus, Edit2, Trash2, User, Phone, Mail, MapPin, Star, ChevronDown, ChevronRight, ShoppingCart, Receipt, Calendar, CreditCard, Package, Upload, MessageCircle, FileText, AlertCircle } from 'lucide-react'
 
 export default function CustomersPage() {
   const { t, toastSuccess, toastError } = useAppStore()
   const { hasPermission } = useUserStore()
   const canEdit = hasPermission(PERMISSIONS.CUSTOMERS_EDIT)
+  const navigate = useNavigate()
   const [customers, setCustomers] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -22,6 +25,8 @@ export default function CustomersPage() {
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleting, setDeleting] = useState(false)
   const [selectedCustomer, setSelectedCustomer] = useState(null)
+  const [sortBy, setSortBy] = useState('name')
+  const [overview, setOverview] = useState(null)
 
   useEffect(() => {
     fetchCustomers()
@@ -31,8 +36,13 @@ export default function CustomersPage() {
   const fetchCustomers = async () => {
     setLoading(true)
     try {
-      const response = await customersApi.getAll({ search: searchQuery })
+      const [response, ov] = await Promise.all([
+        customersApi.getAll({ search: searchQuery }),
+        // Header stat only — the page still works if this call fails.
+        customersApi.overview().catch(() => ({ data: null })),
+      ])
       setCustomers(response.data)
+      setOverview(ov.data)
     } catch (err) {
       console.error('Failed to fetch customers:', err)
     } finally {
@@ -96,6 +106,17 @@ export default function CustomersPage() {
     }
   }
 
+  // wa.me wants digits only (PhoneField stores +2010…, which strips clean).
+  const waLink = (phone) => `https://wa.me/${phone.replace(/[^0-9]/g, '')}`
+
+  // Sort drives the "who's my best customer" question; search stays
+  // server-side (the form submits it).
+  const visible = [...customers].sort((a, b) => {
+    if (sortBy === 'spent_desc') return (parseFloat(b.total_spent) || 0) - (parseFloat(a.total_spent) || 0)
+    if (sortBy === 'loyalty_desc') return (b.loyalty_points || 0) - (a.loyalty_points || 0)
+    return (a.name || '').localeCompare(b.name || '')
+  })
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -134,7 +155,31 @@ export default function CustomersPage() {
         )}
       </div>
 
-      {/* Search */}
+      {/* Summary cards: open credit, customer count, recent sales */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="bg-surface rounded-2xl p-4 border border-border">
+          <div className="flex items-center gap-2 text-sm text-muted mb-1">
+            <CreditCard className="w-4 h-4 text-danger" /> {t('customers.outstandingCredit')}
+          </div>
+          <p className="text-xl font-bold text-danger">ج.م {overview ? (overview.outstanding_credit || 0).toFixed(2) : '0.00'}</p>
+        </div>
+        <div className="bg-surface rounded-2xl p-4 border border-border">
+          <div className="flex items-center gap-2 text-sm text-muted mb-1">
+            <User className="w-4 h-4 text-accent" /> {t('customers.customersCount')}
+          </div>
+          <p className="text-xl font-bold">{customers.length}</p>
+        </div>
+        <div className="bg-surface rounded-2xl p-4 border border-border">
+          <div className="flex items-center gap-2 text-sm text-muted mb-1">
+            <ShoppingCart className="w-4 h-4 text-success" /> {t('customers.sales30d')}
+          </div>
+          <p className="text-xl font-bold text-success">
+            {overview ? `ج.م ${(overview.sales_30d || 0).toFixed(2)}` : '—'}
+          </p>
+        </div>
+      </div>
+
+      {/* Search + sort */}
       <form onSubmit={handleSearch} className="flex gap-2">
         <input
           type="text"
@@ -149,6 +194,17 @@ className="px-4 py-2 bg-surface-tertiary rounded-lg bg-surface-hover"
         >
           {t('common.search')}
         </button>
+        <SearchableSelect
+          options={[
+            { value: 'name', label: t('customers.sortName') },
+            { value: 'spent_desc', label: t('customers.sortSpent') },
+            { value: 'loyalty_desc', label: t('customers.sortLoyalty') },
+          ]}
+          value={sortBy}
+          onChange={(v) => setSortBy(v)}
+          placeholder={t('common.searchSelect')}
+          className="px-4 py-2 rounded-lg border border-border bg-surface outline-none ring-focus"
+        />
       </form>
 
       {/* Customers Grid */}
@@ -158,9 +214,13 @@ className="px-4 py-2 bg-surface-tertiary rounded-lg bg-surface-hover"
 <h3 className="text-lg font-medium text-foreground mb-2">{t('customers.noCustomers')}</h3>
 <p className="text-muted">{t('customers.addFirst')}</p>
         </div>
+      ) : visible.length === 0 ? (
+        <div className="bg-surface rounded-xl border border-border p-12 text-center">
+          <p className="text-muted">{t('customers.noMatches')}</p>
+        </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {customers.map((customer) => (
+          {visible.map((customer) => (
             <div
               key={customer.id}
               onClick={() => setSelectedCustomer(customer)}
@@ -196,6 +256,22 @@ className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-m
                 </div>
               </div>
 
+              {/* Data-quality badges: gaps the CSV import left behind */}
+              {(!customer.phone || !customer.email) && (
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  {!customer.phone && (
+                    <span className="px-2 py-0.5 rounded-lg text-xs font-bold bg-danger-soft text-danger-soft-foreground">
+                      {t('customers.noPhone')}
+                    </span>
+                  )}
+                  {!customer.email && (
+                    <span className="px-2 py-0.5 rounded-lg text-xs font-bold bg-surface-tertiary text-muted">
+                      {t('customers.noEmail')}
+                    </span>
+                  )}
+                </div>
+              )}
+
               <div className="space-y-2 text-sm">
                 {customer.phone && (
 <div className="flex items-center gap-2 text-muted">
@@ -225,6 +301,34 @@ className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-m
 <div className="text-muted">
                   {t('customers.totalLabel')} ج.م {customer.total_spent?.toFixed(2) || '0.00'}
                 </div>
+              </div>
+
+              {/* Quick actions — the card itself already opens the drawer */}
+              <div className="mt-3 pt-3 border-t border-border flex flex-wrap gap-1.5" onClick={(e) => e.stopPropagation()}>
+                {customer.phone && (
+                  <>
+                    <a
+                      href={`tel:${customer.phone}`}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-surface-hover rounded-lg"
+                    >
+                      <Phone className="w-3.5 h-3.5" /> {t('customers.call')}
+                    </a>
+                    <a
+                      href={waLink(customer.phone)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-surface-hover rounded-lg"
+                    >
+                      <MessageCircle className="w-3.5 h-3.5" /> {t('customers.whatsapp')}
+                    </a>
+                  </>
+                )}
+                <button
+                  onClick={() => navigate(`/pos?new=1&customer=${customer.id}`)}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-surface-hover rounded-lg"
+                >
+                  <FileText className="w-3.5 h-3.5" /> {t('customers.newSale')}
+                </button>
               </div>
             </div>
           ))}
@@ -275,26 +379,41 @@ className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-m
 
 function CustomerDetailDrawer({ customer, onClose }) {
   const { t } = useAppStore()
-  const [orders, setOrders] = useState([])
-  const [loadingOrders, setLoadingOrders] = useState(true)
+  const [statement, setStatement] = useState(null)
+  const [subs, setSubs] = useState([])
+  const [loadingData, setLoadingData] = useState(true)
   const [expandedOrder, setExpandedOrder] = useState(null)
+  const [tab, setTab] = useState('orders')
 
   useEffect(() => {
-    fetchCustomerOrders()
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberate trigger list: the loader below is re-created each render and is intentionally NOT a dep
+    fetchDrawerData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberate trigger list: only refetch when the opened customer changes
   }, [customer.id])
 
-  const fetchCustomerOrders = async () => {
-    setLoadingOrders(true)
+  const fetchDrawerData = async () => {
+    setLoadingData(true)
     try {
-      const response = await ordersApi.getByCustomer(customer.id)
-      setOrders(response.data || [])
+      // One statement round trip carries orders + payments + credit sales
+      // (the endpoint existed but no page called it — the drawer used to
+      // re-sum orders client-side and never saw payments or credit).
+      const [stmt, subRes] = await Promise.all([
+        customerStatementsApi.getStatement(customer.id),
+        subscriptionsApi.getAll({ customer_id: customer.id }).catch(() => ({ data: [] })),
+      ])
+      setStatement(stmt.data)
+      setSubs(subRes.data || [])
     } catch (err) {
-      console.error('Failed to fetch customer orders:', err)
+      console.error('Failed to fetch customer detail:', err)
     } finally {
-      setLoadingOrders(false)
+      setLoadingData(false)
     }
   }
+
+  const orders = statement?.orders || []
+  const creditSales = statement?.credit_sales || []
+  const payments = statement?.payments || []
+  const openCredit = creditSales.filter((c) => ['pending', 'partial', 'overdue'].includes(c.status))
+  const openCreditRemaining = openCredit.reduce((sum, c) => sum + (parseFloat(c.remaining_amount) || 0), 0)
 
   const totalOrders = orders.length
   const totalSpent = orders.reduce((sum, o) => sum + parseFloat(o.total || 0), 0)
@@ -383,14 +502,41 @@ className="p-2.5 rounded-lg bg-surface-hover min-w-[44px] min-h-[44px] flex item
             ))}
           </div>
 
-          {/* Purchase History */}
-          <div>
-<h3 className="text-lg font-bold text-foreground mb-3 flex items-center gap-2">
-              <Receipt className="w-5 h-5" />
-              {t('customers.purchaseHistory') || 'Purchase History'}
-            </h3>
+          {/* Open credit highlight — the number the credit tab explains */}
+          {openCreditRemaining > 0 && (
+            <div className="flex items-center justify-between p-3 rounded-xl bg-danger-soft">
+              <div className="flex items-center gap-2 text-sm font-medium text-danger-soft-foreground">
+                <AlertCircle className="w-4 h-4" />
+                {t('customers.outstandingCredit')}
+              </div>
+              <span className="font-bold text-danger-soft-foreground">ج.م {openCreditRemaining.toFixed(2)}</span>
+            </div>
+          )}
 
-            {loadingOrders ? (
+          {/* Tabs: purchase history / credit sales / subscriptions */}
+          <div className="flex gap-2 border-b border-border pb-2">
+            {[
+              { key: 'orders', label: t('customers.purchaseHistory') || 'Purchase History' },
+              { key: 'credit', label: t('customers.tabCredit') || 'Credit' },
+              { key: 'subs', label: t('customers.tabSubscriptions') || 'Subscriptions' },
+            ].map((tb) => (
+              <button
+                key={tb.key}
+                onClick={() => setTab(tb.key)}
+                className={`px-3 py-1.5 text-sm font-medium rounded-lg ${
+                  tab === tb.key
+                    ? 'bg-accent text-white'
+                    : 'text-muted hover:text-foreground hover:bg-surface-hover'
+                }`}
+              >
+                {tb.label}
+              </button>
+            ))}
+          </div>
+
+          {tab === 'orders' && (
+            <div>
+            {loadingData ? (
               <div className="flex items-center justify-center py-8">
 <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-accent"></div>
               </div>
@@ -415,7 +561,7 @@ className="w-full px-4 py-3 flex items-center justify-between bg-surface-hover t
 <div className="font-medium text-foreground text-sm">{order.order_number}</div>
 <div className="text-xs text-muted flex items-center gap-1">
                             <Calendar className="w-3 h-3" />
-                            {new Date(order.created_at).toLocaleDateString()}
+                            {new Date(order.date).toLocaleDateString()}
                           </div>
                         </div>
                       </div>
@@ -423,7 +569,7 @@ className="w-full px-4 py-3 flex items-center justify-between bg-surface-hover t
                         <div className="text-right">
 <div className="font-bold text-foreground text-sm">ج.م{parseFloat(order.total).toFixed(2)}</div>
 <div className="text-xs text-muted">
-                            {order.order_items?.length || 0} {t('customers.items') || 'items'}
+                            {order.items?.length || 0} {t('customers.items') || 'items'}
                           </div>
                         </div>
                         {expandedOrder === order.id ? (
@@ -438,8 +584,8 @@ className="w-full px-4 py-3 flex items-center justify-between bg-surface-hover t
                     {expandedOrder === order.id && (
 <div className="px-4 pb-3 border-t border-border">
                         <div className="pt-3 space-y-2">
-                          {order.order_items?.map((item) => (
-                            <div key={item.id} className="flex items-center justify-between text-sm">
+                          {order.items?.map((item, idx) => (
+                            <div key={`${item.product_name}-${idx}`} className="flex items-center justify-between text-sm">
                               <div className="flex items-center gap-2">
 <Package className="w-4 h-4 text-muted"/>
 <span className="text-foreground">{item.product_name}</span>
@@ -450,7 +596,7 @@ className="w-full px-4 py-3 flex items-center justify-between bg-surface-hover t
                           ))}
                         </div>
 <div className="mt-3 pt-3 border-t border-border flex items-center justify-between text-xs text-muted">
-                          <span>{t('customers.payment') || 'Payment'}: {paymentMethodLabels[order.payment_method] || order.payment_method}</span>
+                          <span>{t('customers.payment') || 'Payment'}: {paymentMethodLabels[payments.find((p) => p.order_id === order.id)?.method] || payments.find((p) => p.order_id === order.id)?.method || '—'}</span>
                           <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
 order.payment_status==='paid'?'bg-success-soft text-success-soft-foreground':
 order.payment_status==='pending'?'bg-warning-soft text-warning-soft-foreground':
@@ -465,7 +611,81 @@ order.payment_status==='pending'?'bg-warning-soft text-warning-soft-foreground':
                 ))}
               </div>
             )}
-          </div>
+            </div>
+          )}
+
+          {tab === 'credit' && (
+            <div className="space-y-2">
+              {creditSales.length === 0 ? (
+                <div className="text-center py-8 text-muted">
+                  <CreditCard className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                  <p>{t('customers.noCredit') || 'No credit sales yet'}</p>
+                </div>
+              ) : creditSales.map((cs) => (
+                <div key={cs.id} className="bg-surface-secondary rounded-xl px-4 py-3 flex items-center justify-between text-sm">
+                  <div>
+                    <div className="font-medium text-foreground text-sm">{t('customers.order')} #{cs.order_id}</div>
+                    <div className="text-xs text-muted flex items-center gap-1">
+                      <Calendar className="w-3 h-3" />
+                      {new Date(cs.date).toLocaleDateString()}
+                      {cs.due_date ? ` · ${t('customers.dueDate')}: ${new Date(cs.due_date).toLocaleDateString()}` : ''}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                      cs.status === 'paid' ? 'bg-success-soft text-success-soft-foreground'
+                      : cs.status === 'overdue' ? 'bg-danger-soft text-danger-soft-foreground'
+                      : 'bg-warning-soft text-warning-soft-foreground'
+                    }`}>
+                      {t(`customers.creditStatus.${cs.status}`) || cs.status}
+                    </span>
+                    <div className="text-right">
+                      <div className={`font-bold text-sm ${parseFloat(cs.remaining_amount) > 0 ? 'text-danger' : 'text-success'}`}>
+                        ج.م {parseFloat(cs.remaining_amount).toFixed(2)}
+                      </div>
+                      <div className="text-xs text-muted">
+                        ج.م {parseFloat(cs.paid_amount || 0).toFixed(2)} / ج.م {parseFloat(cs.total_amount).toFixed(2)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {tab === 'subs' && (
+            <div className="space-y-2">
+              {subs.length === 0 ? (
+                <div className="text-center py-8 text-muted">
+                  <Calendar className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                  <p>{t('customers.noSubscriptions') || 'No subscriptions yet'}</p>
+                </div>
+              ) : subs.map((s) => (
+                <div key={s.id} className="bg-surface-secondary rounded-xl px-4 py-3 flex items-center justify-between text-sm">
+                  <div>
+                    <div className="font-medium text-foreground text-sm">
+                      {s.plan?.name || s.service?.name || `${t('customers.subscription')} #${s.id}`}
+                    </div>
+                    <div className="text-xs text-muted flex items-center gap-1">
+                      <Calendar className="w-3 h-3" />
+                      {new Date(s.start_date).toLocaleDateString()} → {s.end_date ? new Date(s.end_date).toLocaleDateString() : '—'}
+                      {s.next_billing_date ? ` · ${t('customers.nextBilling')}: ${new Date(s.next_billing_date).toLocaleDateString()}` : ''}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                      s.status === 'active' ? 'bg-success-soft text-success-soft-foreground'
+                      : s.status === 'past_due' ? 'bg-danger-soft text-danger-soft-foreground'
+                      : 'bg-surface-tertiary text-muted'
+                    }`}>
+                      {t(`customers.subStatus.${s.status}`) || s.status}
+                    </span>
+                    <span className="font-bold text-foreground">ج.م {parseFloat(s.billing_amount || 0).toFixed(2)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

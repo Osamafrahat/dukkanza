@@ -1,5 +1,6 @@
 import { Search, Zap, User, Wrench, CreditCard, WifiOff, Pause, Play, X, Keyboard } from 'lucide-react'
 import { useState, useEffect, useRef, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useProductStore } from '../stores/productStore'
 import { useCartStore } from '../stores/cartStore'
 import { useAppStore } from '../stores/appStore'
@@ -48,6 +49,22 @@ export default function POSPage() {
   const barcodeInputRef = useRef(null)
   const barcodeTimeoutRef = useRef(null)
   const clearCartConfirmRef = useRef(0)
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // Quick-action handoff from Customers: /pos?new=1&customer=<id>
+  // pre-selects the customer once the list has loaded, then consumes the
+  // params (replace) so a reload doesn't re-trigger it. Waiting on
+  // customers.length keeps the effect from clearing the params before
+  // the list arrives.
+  useEffect(() => {
+    if (searchParams.get('new') !== '1') return
+    const id = searchParams.get('customer')
+    if (!id || customers.length === 0) return
+    const match = customers.find((c) => String(c.id) === String(id))
+    if (match) setSelectedCustomer(match)
+    setSearchParams({}, { replace: true })
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- handoff: searchParams/customers are the deliberate triggers; other deps are stable
+  }, [customers, searchParams])
 
   const { products, categories, setProducts, setCategories, setLoading, setError } = useProductStore()
   const { addItem, items } = useCartStore()
