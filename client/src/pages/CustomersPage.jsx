@@ -4,11 +4,11 @@ import PhoneField from '../components/PhoneField'
 import SearchableSelect from '../components/SearchableSelect'
 import { parseFullPhone } from '../lib/phone'
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { useUserStore, PERMISSIONS } from '../stores/userStore'
 import { customersApi, customerStatementsApi, subscriptionsApi } from '../lib/api'
-import { X, Plus, Edit2, Trash2, User, Phone, Mail, MapPin, Star, ChevronDown, ChevronRight, ShoppingCart, Receipt, Calendar, CreditCard, Package, Upload, MessageCircle, FileText, AlertCircle } from 'lucide-react'
+import { X, Plus, Edit2, Trash2, User, Phone, Mail, MapPin, Star, ChevronDown, ChevronRight, ShoppingCart, Receipt, Calendar, CreditCard, Package, Upload, MessageCircle, FileText, AlertCircle, ExternalLink } from 'lucide-react'
 
 export default function CustomersPage() {
   const { t, toastSuccess, toastError } = useAppStore()
@@ -20,7 +20,9 @@ export default function CustomersPage() {
   const [showForm, setShowForm] = useState(false)
   const [showImport, setShowImport] = useState(false)
   const [editingCustomer, setEditingCustomer] = useState(null)
-  const [searchQuery, setSearchQuery] = useState('')
+  // Deep link from a subscription's customer name: /customers?search=<name>
+  const [searchParams] = useSearchParams()
+  const [searchQuery, setSearchQuery] = useState(() => searchParams.get('search') || '')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleting, setDeleting] = useState(false)
@@ -655,6 +657,17 @@ order.payment_status==='pending'?'bg-warning-soft text-warning-soft-foreground':
 
           {tab === 'subs' && (
             <div className="space-y-2">
+              {subs.length > 0 && (
+                <div className="flex justify-end">
+                  <Link
+                    to={`/subscriptions?customer=${customer.id}`}
+                    className="flex items-center gap-1.5 text-xs font-medium text-accent hover:underline"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    {t('customers.viewSubscriptions')}
+                  </Link>
+                </div>
+              )}
               {subs.length === 0 ? (
                 <div className="text-center py-8 text-muted">
                   <Calendar className="w-12 h-12 mx-auto mb-2 opacity-50" />

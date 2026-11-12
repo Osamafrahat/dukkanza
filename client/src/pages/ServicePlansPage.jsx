@@ -1,10 +1,11 @@
 import ConfirmModal from '../components/ConfirmModal'
 import SearchableSelect from '../components/SearchableSelect'
-import { X, Plus, Edit2, Trash2, CreditCard, Repeat } from 'lucide-react'
+import { X, Plus, Edit2, Trash2, CreditCard, Repeat, Power, Users } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { useUserStore, PERMISSIONS } from '../stores/userStore'
-import { servicePlansApi } from '../lib/api'
+import { servicePlansApi, subscriptionsApi } from '../lib/api'
+import { isSubscriptionValid } from '../lib/subscriptions'
 
 const BILLING_CYCLE_KEYS = {
   monthly: 'services.monthly',
@@ -13,23 +14,32 @@ const BILLING_CYCLE_KEYS = {
 }
 
 export default function ServicePlansPage() {
-  const { t } = useAppStore()
+  const { t, language, toastSuccess, toastError } = useAppStore()
   const { hasPermission } = useUserStore()
   const canEdit = hasPermission(PERMISSIONS.SERVICES_EDIT)
   const [plans, setPlans] = useState([])
+  const [subscriptions, setSubscriptions] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleting, setDeleting] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [sortBy, setSortBy] = useState('name')
 
   useEffect(() => { fetchPlans() }, [])
 
   const fetchPlans = async () => {
     setLoading(true)
     try {
-      const { data } = await servicePlansApi.getAll()
-      setPlans(data)
+      const [planRes, subRes] = await Promise.all([
+        servicePlansApi.getAll(),
+        // Drives the per-plan subscriber chips and the summary card; the
+        // page still renders if this call fails.
+        subscriptionsApi.getAll({}).catch(() => ({ data: [] })),
+      ])
+      setPlans(planRes.data)
+      setSubscriptions(subRes.data || [])
     } catch (err) {
       console.error('Failed to fetch plans:', err)
     } finally {
@@ -42,13 +52,48 @@ export default function ServicePlansPage() {
     try {
       await servicePlansApi.delete(id)
       setDeleteTarget(null)
+      toastSuccess(t('common.success'))
       fetchPlans()
     } catch (err) {
-      console.error('Failed to delete plan:', err)
+      // 409 = subscriptions still reference this plan; the server refuses
+      // because ON DELETE SET NULL would blank their history.
+      const msg = err.response?.status === 409
+        ? (t('services.planInUse') || 'In use').replace('{count}', err.response.data?.subscription_count ?? '?')
+        : err.response?.data?.error || t('common.error') || 'Error'
+      toastError(msg)
     } finally {
       setDeleting(false)
     }
   }
+
+  // POS hides plans with is_active === false — this toggle is the admin
+  // side of that filter.
+  const handleToggleActive = async (plan) => {
+    try {
+      await servicePlansApi.update(plan.id, { is_active: plan.is_active === false })
+      fetchPlans()
+    } catch (err) {
+      toastError(err.response?.data?.error || t('common.error') || 'Error')
+    }
+  }
+
+  // Client-side search + sort: the catalogue is small and fully fetched.
+  const q = searchQuery.trim().toLowerCase()
+  const filtered = q
+    ? plans.filter((p) => [p.name, p.name_ar, p.description].some((v) => v && v.toLowerCase().includes(q)))
+    : plans
+  const visible = [...filtered].sort((a, b) => {
+    if (sortBy === 'price_desc') return (parseFloat(b.price) || 0) - (parseFloat(a.price) || 0)
+    if (sortBy === 'newest') return new Date(b.created_at || 0) - new Date(a.created_at || 0)
+    return (a.name || '').localeCompare(b.name || '')
+  })
+
+  const activeCount = plans.filter((p) => p.is_active !== false).length
+  // Validity-aware: ended/cancelled rows are history, not subscribers —
+  // same rule the server's delete guard reports.
+  const isSubscriber = (s) => isSubscriptionValid(s)
+  const totalSubscribers = subscriptions.filter(isSubscriber).length
+  const subscriberCount = (planId) => subscriptions.filter((s) => s.plan_id === planId && isSubscriber(s)).length
 
   return (
     <div className="space-y-4">
@@ -65,6 +110,50 @@ className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hov
         )}
       </div>
 
+      {/* Summary cards: plans / active / tenant-wide subscribers */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="bg-surface rounded-2xl p-4 border border-border">
+          <div className="flex items-center gap-2 text-sm text-muted mb-1">
+            <CreditCard className="w-4 h-4 text-accent" /> {t('services.plansCount')}
+          </div>
+          <p className="text-xl font-bold">{plans.length}</p>
+        </div>
+        <div className="bg-surface rounded-2xl p-4 border border-border">
+          <div className="flex items-center gap-2 text-sm text-muted mb-1">
+            <Power className="w-4 h-4 text-success" /> {t('services.statusActive')}
+          </div>
+          <p className="text-xl font-bold text-success">{activeCount}</p>
+        </div>
+        <div className="bg-surface rounded-2xl p-4 border border-border">
+          <div className="flex items-center gap-2 text-sm text-muted mb-1">
+            <Users className="w-4 h-4 text-accent" /> {t('services.subscribers')}
+          </div>
+          <p className="text-xl font-bold">{totalSubscribers}</p>
+        </div>
+      </div>
+
+      {/* Search + sort */}
+      <div className="flex flex-col sm:flex-row gap-2">
+        <input
+          type="text"
+          placeholder={t('services.searchPlaceholder')}
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="flex-1 min-w-0 px-4 py-2 rounded-lg border border-border bg-surface"
+        />
+        <SearchableSelect
+          options={[
+            { value: 'name', label: t('services.sortName') },
+            { value: 'price_desc', label: t('services.sortPrice') },
+            { value: 'newest', label: t('services.sortNewest') },
+          ]}
+          value={sortBy}
+          onChange={(v) => setSortBy(v)}
+          placeholder={t('common.searchSelect')}
+          className="w-full sm:w-56 px-4 py-2 rounded-lg border border-border bg-surface outline-none"
+        />
+      </div>
+
       {loading ? (
 <div className="text-center py-8 text-muted">{t('common.loading')||'Loading...'}</div>
       ) : plans.length === 0 ? (
@@ -72,18 +161,30 @@ className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hov
 <CreditCard className="w-12 h-12 mx-auto text-foreground mb-3"/>
 <p className="text-muted">{t('services.noPlans')||'No plans yet'}</p>
         </div>
+      ) : visible.length === 0 ? (
+        <div className="text-center py-12 bg-surface-secondary rounded-xl">
+          <p className="text-muted">{t('services.noMatches')}</p>
+        </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {plans.map(plan => {
+          {visible.map(plan => {
             const cycleKey = BILLING_CYCLE_KEYS[plan.billing_cycle] || BILLING_CYCLE_KEYS.monthly
             const cycleLabel = t(cycleKey)
             const features = Array.isArray(plan.features) ? plan.features : []
             return (
-<div key={plan.id}className="bg-surface border border-border shadow-sm rounded-xl p-5">
+<div key={plan.id}className={`bg-surface border border-border shadow-sm rounded-xl p-5 ${plan.is_active === false ? 'opacity-60' : ''}`}>
                 <div className="flex items-start justify-between mb-3">
-                  <div>
-                    <h3 className="font-semibold text-lg">{plan.name}</h3>
-                    <div className="flex items-center gap-2 mt-1">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-semibold text-lg">{language === 'ar' && plan.name_ar ? plan.name_ar : plan.name}</h3>
+                      {plan.is_active === false && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-surface-tertiary text-muted font-medium">{t('services.inactive')}</span>
+                      )}
+                    </div>
+                    {plan.name_ar && plan.name_ar !== plan.name && (
+                      <div className="text-xs text-muted">{language === 'ar' ? plan.name : plan.name_ar}</div>
+                    )}
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
 <span className="text-xs px-2 py-0.5 rounded-full bg-accent-soft text-accent-soft-foreground flex items-center gap-1">
                         <Repeat className="w-3 h-3" />{cycleLabel}
                       </span>
@@ -92,10 +193,20 @@ className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hov
                           {plan.duration_months} {t('services.months') || 'months'}
                         </span>
                       )}
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-surface-tertiary text-muted flex items-center gap-1" title={t('services.subscribers')}>
+                        <Users className="w-3 h-3" />{subscriberCount(plan.id)}
+                      </span>
                     </div>
                   </div>
                   {canEdit && (
                     <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleToggleActive(plan)}
+                        title={plan.is_active === false ? t('services.activate') : t('services.deactivate')}
+                        className="p-1.5 text-muted hover:text-green-600 rounded-lg"
+                      >
+                        <Power className="w-4 h-4"/>
+                      </button>
 <button onClick={()=>{setEditing(plan);setShowForm(true)}}className="p-1.5 text-muted hover:text-primary-600 rounded-lg"><Edit2 className="w-4 h-4"/></button>
 <button onClick={()=>setDeleteTarget(plan.id)}className="p-1.5 text-muted hover:text-red-600 rounded-lg"><Trash2 className="w-4 h-4"/></button>
                     </div>
@@ -123,9 +234,14 @@ className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hov
 
       {showForm && (
         <PlanForm plan={editing} onSave={async (data) => {
-          if (editing) await servicePlansApi.update(editing.id, data)
-          else await servicePlansApi.create(data)
-          setShowForm(false); setEditing(null); fetchPlans()
+          try {
+            if (editing) await servicePlansApi.update(editing.id, data)
+            else await servicePlansApi.create(data)
+            toastSuccess(t('common.success'))
+            setShowForm(false); setEditing(null); fetchPlans()
+          } catch (err) {
+            toastError(err.response?.data?.error || t('common.error') || 'Error')
+          }
         }} onClose={() => { setShowForm(false); setEditing(null) }} />
       )}
       <ConfirmModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={() => handleDelete(deleteTarget)}
@@ -138,6 +254,7 @@ function PlanForm({ plan, onSave, onClose }) {
   const { t } = useAppStore()
   const [form, setForm] = useState({
     name: plan?.name || '',
+    name_ar: plan?.name_ar || '',
     description: plan?.description || '',
     price: plan?.price || '',
     billing_cycle: plan?.billing_cycle || 'monthly',
@@ -163,6 +280,11 @@ function PlanForm({ plan, onSave, onClose }) {
             <label className="block text-sm font-medium mb-1">{t('services.name') || 'Name'} *</label>
             <input type="text" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required
 className="w-full px-4 py-2 rounded-lg border border-border bg-surface"/>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">{t('services.nameAr')}</label>
+            <input type="text" value={form.name_ar} onChange={e => setForm({ ...form, name_ar: e.target.value })} dir="rtl"
+className="w-full px-4 py-2 rounded-lg border border-border bg-surface" />
           </div>
           <div>
             <label className="block text-sm font-medium mb-1">{t('services.description') || 'Description'}</label>

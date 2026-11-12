@@ -270,4 +270,29 @@ describe('CustomersPage — detail drawer (statement-backed)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Subscriptions' }))
     expect(await screen.findByText('No subscriptions yet')).toBeTruthy()
   })
+
+  it('links the subscriptions tab out to the filtered Subscriptions page', async () => {
+    renderPage()
+    await screen.findByText('Acme')
+    fireEvent.click(screen.getByRole('heading', { name: 'Acme' }))
+    await screen.findByText('ORD-30')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Subscriptions' }))
+
+    const link = await screen.findByRole('link', { name: /View in Subscriptions/ })
+    expect(link.getAttribute('href')).toBe('/subscriptions?customer=1')
+  })
+})
+
+describe('CustomersPage — deep link from a subscription', () => {
+  it('prefills the search box from ?search=', async () => {
+    render(
+      <MemoryRouter initialEntries={['/customers?search=Acme']}>
+        <CustomersPage />
+      </MemoryRouter>
+    )
+
+    expect(await screen.findByDisplayValue('Acme')).toBeTruthy()
+    await waitFor(() => expect(customersApi.getAll).toHaveBeenCalledWith({ search: 'Acme' }))
+  })
 })

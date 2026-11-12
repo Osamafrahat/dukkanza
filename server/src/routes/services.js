@@ -102,6 +102,20 @@ router.delete('/:id', authenticateToken, requirePermission('services_edit'), [
   param('id').isNumeric().withMessage('Invalid service ID'),
 ], validate, async (req, res) => {
   try {
+    // Same guard as plans: subscriptions point here with ON DELETE SET
+    // NULL, so deleting a referenced service would blank its history.
+    const { data: refs } = await supabase
+      .from('subscriptions')
+      .select('id')
+      .eq('tenant_id', req.user?.tenantId)
+      .eq('service_id', req.params.id)
+    if (refs && refs.length > 0) {
+      return res.status(409).json({
+        error: `Service is used by ${refs.length} subscription(s) — deactivate it instead`,
+        subscription_count: refs.length,
+      })
+    }
+
     const { error } = await supabase
       .from('services')
       .delete()

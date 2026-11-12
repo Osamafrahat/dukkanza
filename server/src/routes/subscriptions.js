@@ -30,6 +30,18 @@ router.get('/payments/all', async (req, res) => {
   }
 })
 
+// Effective status: nothing auto-writes `status` when end_date passes (no
+// cron sweeps the table), so a row still flagged 'active' after its end
+// date is reported — and filtered — as 'expired'. Read-side only, mirroring
+// the client's isSubscriptionValid: a null end_date never expires and the
+// end date is inclusive. past_due is a billing flag, not a termination, so
+// it survives past the end date.
+const effectiveStatus = (sub) => {
+  if (sub.status !== 'active') return sub.status
+  if (!sub.end_date) return 'active'
+  return String(sub.end_date).slice(0, 10) < new Date().toISOString().slice(0, 10) ? 'expired' : 'active'
+}
+
 // Get all subscriptions with joins
 router.get('/', async (req, res) => {
   try {
@@ -39,11 +51,14 @@ router.get('/', async (req, res) => {
       .select('*, customer:customers(id, name, phone), service:services(id, name, name_ar, service_type), plan:service_plans(id, name, name_ar, billing_cycle)')
       .eq('tenant_id', req.user?.tenantId)
       .order('created_at', { ascending: false })
-    if (status) query = query.eq('status', status)
     if (customer_id) query = query.eq('customer_id', customer_id)
     const { data, error } = await query
     if (error) throw error
-    res.json(data)
+    // The status filter runs here (not in SQL) because it must match the
+    // computed value above — a DB-side .eq('status') would miss the rows
+    // that are 'active' in the table but expired by date.
+    const rows = (data || []).map((s) => ({ ...s, status: effectiveStatus(s) }))
+    res.json(status ? rows.filter((s) => s.status === status) : rows)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -79,7 +94,7 @@ router.get('/:id', [
       .eq('tenant_id', req.user?.tenantId)
       .single()
     if (error || !data) return res.status(404).json({ error: 'Subscription not found' })
-    res.json(data)
+    res.json({ ...data, status: effectiveStatus(data) })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -105,6 +120,30 @@ router.post('/', requirePermission('services_edit'), [
       auto_renew: auto_renew !== false,
       billing_amount,
       notes,
+    }
+
+    // One live subscription per customer per plan/service — the same guard
+    // the POS /quick route has; the manual form previously allowed
+    // duplicates. A row past its end_date is over and doesn't block.
+    if (plan_id || service_id) {
+      const { data: existing } = await supabase
+        .from('subscriptions')
+        .select('id, plan_id, service_id, status, end_date')
+        .eq('tenant_id', req.user?.tenantId)
+        .eq('customer_id', customer_id)
+        .in('status', ['active', 'past_due'])
+      const today = new Date().toISOString().slice(0, 10)
+      const blocking = (existing || []).find((s) => {
+        if (s.end_date && String(s.end_date).slice(0, 10) < today) return false
+        if (plan_id) return Number(s.plan_id) === Number(plan_id)
+        return Number(s.service_id) === Number(service_id)
+      })
+      if (blocking) {
+        return res.status(409).json({
+          error: 'Customer already has an active subscription for this plan',
+          existing_subscription_id: blocking.id,
+        })
+      }
     }
 
     const { data, error } = await supabase
@@ -181,8 +220,10 @@ router.patch('/:id/cancel', requirePermission('services_edit'), [
 // Renew subscription
 router.patch('/:id/renew', requirePermission('services_edit'), [
   param('id').isNumeric().withMessage('Invalid subscription ID'),
+  body('payment_method').optional().isIn(['cash', 'card', 'bank', 'mobile', 'credit']).withMessage('Invalid payment method'),
 ], validate, async (req, res) => {
   try {
+    const { payment_method } = req.body
     const { data: sub } = await supabase
       .from('subscriptions')
       .select('*, plan:service_plans(billing_cycle, duration_months)')
@@ -238,7 +279,7 @@ router.patch('/:id/renew', requirePermission('services_edit'), [
         tenant_id: req.user?.tenantId,
         subscription_id: req.params.id,
         amount: sub.billing_amount,
-        payment_method: 'cash',
+        payment_method: payment_method || 'cash',
         notes: 'Renewal payment',
       })
       .select()

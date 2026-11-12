@@ -1,9 +1,9 @@
 import ConfirmModal from '../components/ConfirmModal'
 import SearchableSelect from '../components/SearchableSelect'
 import BarcodePrinter from '../components/BarcodePrinter'
-import { X, Plus, Edit2, Trash2, RefreshCw, Ban, CreditCard, User, ScanBarcode } from 'lucide-react'
+import { X, Plus, Edit2, Trash2, RefreshCw, Ban, CreditCard, User, ScanBarcode, Phone, MessageCircle } from 'lucide-react'
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { useUserStore, PERMISSIONS } from '../stores/userStore'
 import { subscriptionsApi, servicesApi, servicePlansApi, customersApi } from '../lib/api'
@@ -37,20 +37,32 @@ export default function SubscriptionsPage() {
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleting, setDeleting] = useState(false)
   const [filterStatus, setFilterStatus] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [sortBy, setSortBy] = useState('newest')
+  const [filterCustomerId, setFilterCustomerId] = useState(null)
+  const [searchParams] = useSearchParams()
   const [showPayments, setShowPayments] = useState(null)
   const [cancelTarget, setCancelTarget] = useState(null)
   const [renewTarget, setRenewTarget] = useState(null)
   // Subscription whose barcode label is open; the row checkbox reflects it.
   const [barcodeTarget, setBarcodeTarget] = useState(null)
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberate trigger list: the loader below is re-created each render and is intentionally NOT a dep, so only these inputs refetch
-  useEffect(() => { fetchData() }, [filterStatus])
+  // One fetch of the whole set: status/search/sort filter client-side so
+  // the summary cards always see every row (the old per-status refetch
+  // made card counts depend on the active filter).
+  useEffect(() => { fetchData() }, [])
+
+  // Deep link from the customer drawer: /subscriptions?customer=<id>
+  useEffect(() => {
+    const cid = searchParams.get('customer')
+    if (cid) setFilterCustomerId(cid)
+  }, [searchParams])
 
   const fetchData = async () => {
     setLoading(true)
     try {
       const [subRes, svcRes, planRes, custRes] = await Promise.all([
-        subscriptionsApi.getAll(filterStatus ? { status: filterStatus } : {}),
+        subscriptionsApi.getAll({}),
         servicesApi.getAll(),
         servicePlansApi.getAll(),
         customersApi.getAll(),
@@ -78,9 +90,9 @@ export default function SubscriptionsPage() {
     }
   }
 
-  const handleRenew = async (id) => {
+  const handleRenew = async (id, payment_method) => {
     try {
-      await subscriptionsApi.renew(id)
+      await subscriptionsApi.renew(id, { payment_method })
       setRenewTarget(null)
       toastSuccess(t('services.subscriptionRenewed') || 'Subscription renewed')
       fetchData()
@@ -104,6 +116,57 @@ export default function SubscriptionsPage() {
       setDeleting(false)
     }
   }
+
+  // Local-date strings (same convention as isSubscriptionValid): expiring/
+  // renewal computations must agree with the Validity column, which uses
+  // the browser's date, not UTC.
+  const localDateStr = (offsetDays = 0) => {
+    const d = new Date(Date.now() + offsetDays * 86400000)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+  const today = localDateStr()
+  const isExpiringSoon = (s) =>
+    isSubscriptionValid(s) && s.end_date &&
+    String(s.end_date).slice(0, 10) >= today &&
+    String(s.end_date).slice(0, 10) <= localDateStr(30)
+  const isRenewalDue = (s) =>
+    isSubscriptionValid(s) && s.next_billing_date &&
+    String(s.next_billing_date).slice(0, 10) <= today
+  const liveStatuses = ['active', 'past_due']
+
+  const activeCount = subscriptions.filter((s) => s.status === 'active').length
+  const pastDueCount = subscriptions.filter((s) => s.status === 'past_due').length
+  const expiringCount = subscriptions.filter(isExpiringSoon).length
+  const monthlyBilling = subscriptions
+    .filter((s) => liveStatuses.includes(s.status))
+    .reduce((sum, s) => sum + (parseFloat(s.billing_amount) || 0), 0)
+
+  // Status now arrives server-computed (effective), so the client only
+  // layers search / customer / expiring-pseudo-filter on top.
+  const filterCustomer = filterCustomerId
+    ? customers.find((c) => String(c.id) === String(filterCustomerId))
+    : null
+  const q = searchQuery.trim().toLowerCase()
+  const matched = subscriptions.filter((s) => {
+    if (filterCustomerId && String(s.customer_id) !== String(filterCustomerId)) return false
+    if (filterStatus === 'expiring') {
+      if (!isExpiringSoon(s)) return false
+    } else if (filterStatus && s.status !== filterStatus) {
+      return false
+    }
+    if (q) {
+      const hay = [s.customer?.name, s.customer?.phone, s.plan?.name, s.service?.name]
+        .filter(Boolean).join(' ').toLowerCase()
+      if (!hay.includes(q)) return false
+    }
+    return true
+  })
+  const visible = [...matched].sort((a, b) => {
+    if (sortBy === 'customer') return (a.customer?.name || '').localeCompare(b.customer?.name || '')
+    if (sortBy === 'amount') return (parseFloat(b.billing_amount) || 0) - (parseFloat(a.billing_amount) || 0)
+    if (sortBy === 'end') return (a.end_date || '9999-12-31').localeCompare(b.end_date || '9999-12-31')
+    return new Date(b.created_at || 0) - new Date(a.created_at || 0)
+  })
 
   const barcodeValid = isSubscriptionValid(barcodeTarget)
 
@@ -130,14 +193,81 @@ className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hov
         </div>
       </div>
 
-      {/* Filters */}
-      <div className="flex gap-2">
+      {/* Summary cards: active / expiring / monthly billing / past due */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-surface rounded-2xl p-4 border border-border">
+          <div className="flex items-center gap-2 text-sm text-muted mb-1">
+            <CreditCard className="w-4 h-4 text-success" /> {t('services.statusActive')}
+          </div>
+          <p className="text-xl font-bold text-success">{activeCount}</p>
+        </div>
+        <button
+          onClick={() => setFilterStatus(filterStatus === 'expiring' ? '' : 'expiring')}
+          className={`text-start rounded-2xl p-4 border transition-colors ${filterStatus === 'expiring' ? 'border-accent bg-accent-soft' : 'bg-surface border-border hover:bg-surface-hover'}`}
+          title={t('services.expiring30')}
+        >
+          <div className="flex items-center gap-2 text-sm text-muted mb-1">
+            <RefreshCw className="w-4 h-4 text-warning" /> {t('services.expiring30')}
+          </div>
+          <p className="text-xl font-bold text-warning">{expiringCount}</p>
+        </button>
+        <div className="bg-surface rounded-2xl p-4 border border-border">
+          <div className="flex items-center gap-2 text-sm text-muted mb-1">
+            <CreditCard className="w-4 h-4 text-accent" /> {t('services.monthlyBilling')}
+          </div>
+          <p className="text-xl font-bold">{monthlyBilling.toLocaleString()} {t('common.currency')}</p>
+        </div>
+        <div className="bg-surface rounded-2xl p-4 border border-border">
+          <div className="flex items-center gap-2 text-sm text-muted mb-1">
+            <Ban className="w-4 h-4 text-danger" /> {t('services.statusPastDue')}
+          </div>
+          <p className="text-xl font-bold text-danger">{pastDueCount}</p>
+        </div>
+      </div>
+
+      {/* Filters + search + sort */}
+      <div className="flex flex-wrap items-center gap-2">
         {['', 'active', 'expired', 'cancelled', 'past_due'].map(s => (
           <button key={s} onClick={() => setFilterStatus(s)}
 className={`px-3 py-1.5 rounded-lg text-sm font-medium ${filterStatus===s ?'bg-accent text-white':'bg-surface-tertiary text-muted bg-surface-hover'}`}>
             {s ? t(STATUS_LABEL_KEYS[s]) || s : t('services.all') || 'All'}
           </button>
         ))}
+        <button
+          onClick={() => setFilterStatus(filterStatus === 'expiring' ? '' : 'expiring')}
+          className={`px-3 py-1.5 rounded-lg text-sm font-medium ${filterStatus === 'expiring' ? 'bg-accent text-white' : 'bg-surface-tertiary text-muted bg-surface-hover'}`}
+        >
+          {t('services.expiring30')}
+        </button>
+        {filterCustomer && (
+          <button
+            onClick={() => setFilterCustomerId(null)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-accent-soft text-accent-soft-foreground"
+            title={t('common.cancel')}
+          >
+            {t('services.customer')}: {filterCustomer.name}
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+        <input
+          type="text"
+          placeholder={t('services.searchSubsPlaceholder')}
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="flex-1 min-w-40 sm:min-w-56 px-4 py-2 rounded-lg border border-border bg-surface"
+        />
+        <SearchableSelect
+          options={[
+            { value: 'newest', label: t('services.sortNewest') },
+            { value: 'customer', label: t('services.sortCustomer') },
+            { value: 'amount', label: t('services.sortAmount') },
+            { value: 'end', label: t('services.sortEnd') },
+          ]}
+          value={sortBy}
+          onChange={(v) => setSortBy(v)}
+          placeholder={t('common.searchSelect')}
+          className="w-full sm:w-52 px-4 py-2 rounded-lg border border-border bg-surface outline-none"
+        />
       </div>
 
       {loading ? (
@@ -146,6 +276,10 @@ className={`px-3 py-1.5 rounded-lg text-sm font-medium ${filterStatus===s ?'bg-a
 <div className="text-center py-12 bg-surface-secondary rounded-xl">
 <CreditCard className="w-12 h-12 mx-auto text-foreground mb-3"/>
 <p className="text-muted">{t('services.noSubscriptions')||'No subscriptions yet'}</p>
+        </div>
+      ) : visible.length === 0 ? (
+        <div className="text-center py-12 bg-surface-secondary rounded-xl">
+          <p className="text-muted">{t('services.noMatches')}</p>
         </div>
       ) : (
 <div className="bg-surface border border-border shadow-sm rounded-xl overflow-hidden">
@@ -165,10 +299,11 @@ className={`px-3 py-1.5 rounded-lg text-sm font-medium ${filterStatus===s ?'bg-a
                 </tr>
               </thead>
               <tbody>
-                {subscriptions.map(sub => {
+                {visible.map(sub => {
                   const valid = isSubscriptionValid(sub)
+                  const expiringSoon = isExpiringSoon(sub)
                   return (
-<tr key={sub.id}className="border-b border-border bg-surface-hover">
+<tr key={sub.id}className={`border-b border-border ${expiringSoon ? 'bg-warning-soft' : 'bg-surface-hover'}`}>
                     <td className="p-4">
                       {/* Tick to get this subscription's barcode label */}
                       <input
@@ -182,8 +317,34 @@ className={`px-3 py-1.5 rounded-lg text-sm font-medium ${filterStatus===s ?'bg-a
                     </td>
                     <td className="p-4">
                       <div className="flex items-center gap-2">
-<User className="w-4 h-4 text-muted"/>
-                        {sub.customer?.name || '-'}
+<User className="w-4 h-4 text-muted flex-shrink-0"/>
+                        <div className="min-w-0">
+                          {sub.customer?.name ? (
+                            <Link
+                              to={`/customers?search=${encodeURIComponent(sub.customer.name)}`}
+                              title={t('customers.title')}
+                              className="font-medium hover:text-accent hover:underline break-words"
+                            >
+                              {sub.customer.name}
+                            </Link>
+                          ) : '-'}
+                          {sub.customer?.phone && (
+                            <div className="flex items-center gap-2 mt-1">
+                              <a href={`tel:${sub.customer.phone}`} title={t('customers.call')} className="text-muted hover:text-accent">
+                                <Phone className="w-3.5 h-3.5"/>
+                              </a>
+                              <a
+                                href={`https://wa.me/${sub.customer.phone.replace(/[^0-9]/g, '')}`}
+                                target="_blank" rel="noopener noreferrer"
+                                title={t('customers.whatsapp')}
+                                className="text-muted hover:text-accent"
+                              >
+                                <MessageCircle className="w-3.5 h-3.5"/>
+                              </a>
+                              <span className="text-xs text-muted break-all">{sub.customer.phone}</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </td>
                     <td className="p-4">{sub.plan?.name || '-'}</td>
@@ -198,16 +359,26 @@ className={`px-3 py-1.5 rounded-lg text-sm font-medium ${filterStatus===s ?'bg-a
                       </span>
                     </td>
                     <td className="p-4">
-                      <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${STATUS_STYLES[sub.status] || ''}`}>
-                        {t(STATUS_LABEL_KEYS[sub.status]) || sub.status}
-                      </span>
+                      <div className="flex flex-col items-start gap-1">
+                        <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${STATUS_STYLES[sub.status] || ''}`}>
+                          {t(STATUS_LABEL_KEYS[sub.status]) || sub.status}
+                        </span>
+                        {isRenewalDue(sub) && (
+                          <span className="inline-flex px-2 py-1 rounded-full text-xs font-medium bg-warning-soft text-warning-soft-foreground">
+                            {t('services.renewalDue')}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     {canEdit && (
                       <td className="p-4">
                         <div className="flex items-center justify-end gap-1">
-                          {sub.status === 'active' && (
+                          {/* Renew/cancel open for every non-cancelled row —
+                              previously past_due and expired-by-date rows
+                              had no actions at all. */}
+                          {sub.status !== 'cancelled' && (
                             <>
-                              <button onClick={() => setRenewTarget(sub.id)} title={t('services.renew')}
+                              <button onClick={() => setRenewTarget(sub)} title={t('services.renew')}
 className="p-1.5 text-muted hover:text-green-600 rounded-lg"><RefreshCw className="w-4 h-4"/></button>
                               <button onClick={() => setCancelTarget(sub.id)} title={t('services.cancel')}
 className="p-1.5 text-muted hover:text-red-600 rounded-lg"><Ban className="w-4 h-4"/></button>
@@ -235,9 +406,16 @@ className="p-1.5 text-muted hover:text-red-600 rounded-lg"><Trash2 className="w-
         <SubscriptionForm
           subscription={editing} services={services} plans={plans} customers={customers}
           onSave={async (data) => {
-            if (editing) await subscriptionsApi.update(editing.id, data)
-            else await subscriptionsApi.create(data)
-            setShowForm(false); setEditing(null); fetchData()
+            try {
+              if (editing) await subscriptionsApi.update(editing.id, data)
+              else await subscriptionsApi.create(data)
+              toastSuccess(t('common.success'))
+              setShowForm(false); setEditing(null); fetchData()
+            } catch (err) {
+              // 409 = duplicate active subscription; the modal stays open so
+              // the user can pick another plan/service.
+              toastError(err.response?.data?.error || t('common.error') || 'Error')
+            }
           }} onClose={() => { setShowForm(false); setEditing(null) }} />
       )}
       {showPayments && <PaymentsModal subscriptionId={showPayments} onClose={() => setShowPayments(null)} onRecord={async (data) => {
@@ -267,18 +445,24 @@ className="p-1.5 text-muted hover:text-red-600 rounded-lg"><Trash2 className="w-
         title={t('services.deleteSubscription') || 'Delete Subscription'} message={t('services.deleteSubConfirm') || 'Are you sure?'} type="danger" loading={deleting} />
       <ConfirmModal open={!!cancelTarget} onClose={() => setCancelTarget(null)} onConfirm={() => handleCancel(cancelTarget)}
         title={t('services.cancelSubscription') || 'Cancel Subscription'} message={t('services.cancelSubConfirm') || 'Are you sure you want to cancel this subscription?'} type="danger" />
-      <ConfirmModal open={!!renewTarget} onClose={() => setRenewTarget(null)} onConfirm={() => handleRenew(renewTarget)}
-        title={t('services.renewSubscription') || 'Renew Subscription'} message={t('services.renewSubConfirm') || 'Are you sure you want to renew this subscription?'} type="info" />
+      {renewTarget && (
+        <RenewModal
+          subscription={renewTarget}
+          onClose={() => setRenewTarget(null)}
+          onConfirm={handleRenew}
+        />
+      )}
     </div>
   )
 }
 
-function SubscriptionForm({ subscription, plans, customers, onSave, onClose }) {
+function SubscriptionForm({ subscription, services, plans, customers, onSave, onClose }) {
   const { t, toastError } = useAppStore()
   const today = new Date().toISOString().split('T')[0]
   const [form, setForm] = useState({
     customer_id: subscription?.customer_id || '',
     plan_id: subscription?.plan_id || '',
+    service_id: subscription?.service_id || '',
     start_date: subscription?.start_date || today,
     end_date: subscription?.end_date || '',
     next_billing_date: subscription?.next_billing_date || '',
@@ -306,6 +490,7 @@ function SubscriptionForm({ subscription, plans, customers, onSave, onClose }) {
       billing_amount: parseFloat(form.billing_amount) || 0,
       customer_id: parseInt(form.customer_id),
       plan_id: form.plan_id ? parseInt(form.plan_id) : null,
+      service_id: form.service_id ? parseInt(form.service_id) : null,
     })
   }
 
@@ -339,6 +524,25 @@ function SubscriptionForm({ subscription, plans, customers, onSave, onClose }) {
                 {selectedPlan.duration_months} {t('services.months') || 'months'} | {selectedPlan.billing_cycle}
               </p>
             )}
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">{t('services.service')}</label>
+            <SearchableSelect
+              options={[{ value: '', label: t('services.selectService') }, ...(services || []).map(s => ({ value: String(s.id), label: `${s.name} - ${s.price?.toLocaleString()} ${t('common.currency') || 'EGP'}` }))]}
+              value={form.service_id}
+              onChange={(v) => {
+                const svc = (services || []).find(s => String(s.id) === v)
+                setForm({
+                  ...form,
+                  service_id: v,
+                  // Service-only subscriptions have no plan price to
+                  // prefill from — use the service's price unless a plan
+                  // already set the amount.
+                  billing_amount: svc && !form.plan_id ? svc.price : form.billing_amount,
+                })
+              }}
+              placeholder={t('common.searchSelect')}
+            />
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
@@ -379,6 +583,62 @@ className="w-full px-4 py-2 rounded-lg border border-border bg-surface"/>
 <button type="submit"className="px-4 py-2 bg-accent text-white rounded-lg hover:bg-primary-700">{t('common.save')}</button>
           </div>
         </form>
+      </div>
+    </div>
+  )
+}
+
+// Renewal used to be a bare confirm — the server always recorded the
+// renewal payment as 'cash'. This modal keeps the confirm and lets the
+// cashier pick the method the money actually arrived in.
+function RenewModal({ subscription, onClose, onConfirm }) {
+  const { t } = useAppStore()
+  const [method, setMethod] = useState('cash')
+  const [saving, setSaving] = useState(false)
+
+  const submit = async () => {
+    setSaving(true)
+    try {
+      await onConfirm(subscription.id, method)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="bg-surface rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <h2 className="text-xl font-semibold">{t('services.renewSubscription')}</h2>
+          <button onClick={onClose} className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg bg-surface-hover"><X className="w-5 h-5"/></button>
+        </div>
+        <div className="p-4 space-y-4">
+          <p className="text-sm text-muted">{t('services.renewSubConfirm')}</p>
+          <div>
+            <label className="block text-sm font-medium mb-1">{t('services.renewMethod')}</label>
+            <SearchableSelect
+              options={[
+                { value: 'cash', label: t('payments.cash') || 'Cash' },
+                { value: 'card', label: t('payments.card') || 'Card' },
+                { value: 'bank', label: t('payments.bank') || 'Bank Transfer' },
+              ]}
+              value={method}
+              onChange={(v) => setMethod(v)}
+              placeholder={t('common.searchSelect')}
+            />
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-foreground bg-surface-tertiary rounded-lg bg-surface-hover">{t('common.cancel')}</button>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={saving}
+              className="px-4 py-2 bg-accent text-white rounded-lg hover:bg-primary-700 disabled:opacity-50"
+            >
+              {saving ? (t('common.processing') || 'Processing...') : t('common.confirm')}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )

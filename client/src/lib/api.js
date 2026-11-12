@@ -397,7 +397,7 @@ export const subscriptionsApi = {
   update: (id, data) => api.put(`/subscriptions/${id}`, data),
   delete: (id) => api.delete(`/subscriptions/${id}`),
   cancel: (id) => api.patch(`/subscriptions/${id}/cancel`),
-  renew: (id) => api.patch(`/subscriptions/${id}/renew`),
+  renew: (id, data) => api.patch(`/subscriptions/${id}/renew`, data),
   getPayments: (id) => api.get(`/subscriptions/${id}/payments`),
   recordPayment: (id, data) => api.post(`/subscriptions/${id}/payments`, data),
 }

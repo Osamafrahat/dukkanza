@@ -103,6 +103,22 @@ router.delete('/:id', authenticateToken, requirePermission('services_edit'), [
   param('id').isNumeric().withMessage('Invalid plan ID'),
 ], validate, async (req, res) => {
   try {
+    // Subscriptions reference plans with ON DELETE SET NULL — deleting a
+    // used plan would silently blank every row that pointed at it (the
+    // subscriptions table just shows '-'). Block instead; is_active=false
+    // is the sanctioned alternative that keeps history intact.
+    const { data: refs } = await supabase
+      .from('subscriptions')
+      .select('id')
+      .eq('tenant_id', req.user?.tenantId)
+      .eq('plan_id', req.params.id)
+    if (refs && refs.length > 0) {
+      return res.status(409).json({
+        error: `Plan is used by ${refs.length} subscription(s) — deactivate it instead`,
+        subscription_count: refs.length,
+      })
+    }
+
     const { error } = await supabase
       .from('service_plans')
       .delete()
