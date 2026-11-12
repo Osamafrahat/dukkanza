@@ -162,6 +162,7 @@ export const branchesApi = {
 // Suppliers API
 export const suppliersApi = {
   getAll: () => api.get('/suppliers'),
+  overview: () => api.get('/suppliers/overview'),
   getById: (id) => api.get(`/suppliers/${id}`),
   create: (data) => api.post('/suppliers', data),
   update: (id, data) => api.put(`/suppliers/${id}`, data),

@@ -2,11 +2,13 @@ import ConfirmModal from '../components/ConfirmModal'
 import SearchableSelect from '../components/SearchableSelect'
 import { DollarSign, Plus, Search, Trash2, Save, X, ArrowUpRight, ArrowDownRight, Pencil } from 'lucide-react'
 import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { paymentsApi, suppliersApi } from '../lib/api'
 
 export default function PaymentsPage() {
   const { t, toastSuccess, toastError } = useAppStore()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [payments, setPayments] = useState([])
   const [suppliers, setSuppliers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -41,6 +43,24 @@ export default function PaymentsPage() {
     } catch (err) { console.error(err) }
     finally { setLoading(false) }
   }
+
+  // Quick-action handoff from Suppliers: /accounting/payments?new=1&type=outbound&supplier=<id>
+  // opens the form pre-filled. Params are consumed (cleared) so a reload or
+  // back-navigation doesn't reopen the form.
+  useEffect(() => {
+    if (searchParams.get('new') !== '1') return
+    const type = searchParams.get('type')
+    const supplier = searchParams.get('supplier')
+    setFormData((prev) => ({
+      ...prev,
+      payment_type: type === 'outbound' ? 'outbound' : prev.payment_type,
+      partner_type: supplier ? 'supplier' : prev.partner_type,
+      partner_id: supplier || prev.partner_id,
+    }))
+    setShowForm(true)
+    setSearchParams({}, { replace: true })
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only handoff: searchParams identity changes every render, so only the initial read should trigger
+  }, [])
 
   const handleEdit = (payment) => {
     setEditingId(payment.id)

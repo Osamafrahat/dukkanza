@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, screen, fireEvent, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 
 // An outbound payment must name a supplier (the server 400s otherwise —
 // without one the supplier's Remaining Balance could never move), and a
-// successful save posts the payment with a plain toast. The pre-save
-// preview panel left with the advance feature.
+// successful save posts the payment with a plain toast. The page also
+// accepts a quick-action handoff from Suppliers:
+//   /accounting/payments?new=1&type=outbound&supplier=<id>
+// which must open the form pre-filled and consume the params.
 vi.mock('../lib/api', () => {
   const ok = (data) => vi.fn().mockResolvedValue({ data })
   return {
@@ -31,6 +34,14 @@ beforeEach(() => {
   })
 })
 
+// The page reads search params, so every render needs a router context.
+const renderPage = (initialEntries = ['/accounting/payments']) =>
+  render(
+    <MemoryRouter initialEntries={initialEntries}>
+      <PaymentsPage />
+    </MemoryRouter>
+  )
+
 // SearchableSelect renders a role="combobox" trigger whose text is the
 // currently-selected label; opening it reveals option buttons.
 function openSelect(triggerText) {
@@ -46,7 +57,7 @@ function pickOption(label) {
 describe('PaymentsPage — outbound payments', () => {
   it('saves an outbound payment against the selected supplier', async () => {
     paymentsApi.create.mockResolvedValue({ data: { id: 7 } })
-    render(<PaymentsPage />)
+    renderPage()
     fireEvent.click(await screen.findByRole('button', { name: /New Payment/ }))
 
     openSelect('Inbound (Received)')
@@ -69,7 +80,7 @@ describe('PaymentsPage — outbound payments', () => {
   })
 
   it('offers no supplier picker for inbound payments', async () => {
-    render(<PaymentsPage />)
+    renderPage()
     await screen.findByRole('button', { name: /New Payment/ })
 
     // Type stays inbound — no supplier combobox exists to open.
@@ -80,7 +91,7 @@ describe('PaymentsPage — outbound payments', () => {
   })
 
   it('refuses to save an outbound payment without a supplier', async () => {
-    render(<PaymentsPage />)
+    renderPage()
     fireEvent.click(await screen.findByRole('button', { name: /New Payment/ }))
 
     openSelect('Inbound (Received)')
@@ -96,5 +107,39 @@ describe('PaymentsPage — outbound payments', () => {
     })
     // The request never leaves the client — nothing to roll back server-side.
     expect(paymentsApi.create).not.toHaveBeenCalled()
+  })
+})
+
+describe('PaymentsPage — quick-action handoff', () => {
+  it('opens the form pre-filled from ?new=1&type=outbound&supplier=<id>', async () => {
+    renderPage(['/accounting/payments?new=1&type=outbound&supplier=9'])
+
+    // The form is open without clicking New Payment, type is outbound, and
+    // the supplier combobox shows the handed-off supplier (value supplier:9
+    // resolves against the loaded options).
+    const supplierTrigger = await waitFor(() => {
+      const el = screen
+        .getAllByRole('combobox')
+        .find((x) => x.textContent.includes('Acme'))
+      expect(el).toBeTruthy()
+      return el
+    })
+    expect(supplierTrigger).toBeTruthy()
+
+    const typeTrigger = screen
+      .getAllByRole('combobox')
+      .find((el) => el.textContent.includes('Outbound (Paid)'))
+    expect(typeTrigger).toBeTruthy()
+  })
+
+  it('leaves the page untouched without the handoff params', async () => {
+    renderPage()
+
+    await screen.findByRole('button', { name: /New Payment/ })
+    // No supplier combobox — the form was not auto-opened.
+    const supplierTrigger = screen
+      .getAllByRole('combobox')
+      .find((el) => el.textContent.includes('Select supplier...'))
+    expect(supplierTrigger).toBeUndefined()
   })
 })

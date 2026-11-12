@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { useBranchStore } from '../stores/branchStore'
 import { formatCurrency } from '../lib/utils'
@@ -11,6 +12,7 @@ import { CheckCircle, Eye, FileText, Loader2, Package, Plus, Search, Send, Shopp
 
 export default function PurchaseOrdersPage() {
   const { t, toastSuccess, toastError } = useAppStore()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [orders, setOrders] = useState([])
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -78,6 +80,19 @@ export default function PurchaseOrdersPage() {
     loadDropdowns()
     loadBranches()
   }, [loadBranches])
+
+  // Quick-action handoff from Suppliers: /purchase-orders?new=1&supplier=<id>
+  // opens the create form with that supplier already selected. Params are
+  // consumed (cleared) so a reload doesn't reopen the form. Option values
+  // are String(s.id), hence the String() here.
+  useEffect(() => {
+    if (searchParams.get('new') !== '1') return
+    const supplier = searchParams.get('supplier')
+    if (supplier) setForm((prev) => ({ ...prev, supplier_id: String(supplier) }))
+    setShowCreateForm(true)
+    setSearchParams({}, { replace: true })
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only handoff: searchParams identity changes every render, so only the initial read should trigger
+  }, [])
 
   const handleItemChange = (index, field, value) => {
     const updated = [...form.items]

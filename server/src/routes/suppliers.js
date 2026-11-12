@@ -49,23 +49,152 @@ router.get('/', async (req, res, next) => {
   }
 })
 
-// Get supplier by ID
+// Aggregate for the Suppliers page header: purchase-order value created in
+// the last 30 days (cancelled orders excluded). Defined BEFORE /:id so the
+// literal path wins over the param route.
+router.get('/overview', async (req, res, next) => {
+  try {
+    const since = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+    const { data, error } = await supabase
+      .from('purchase_orders')
+      .select('total, status')
+      .eq('tenant_id', req.user?.tenantId)
+      .gte('created_at', since)
+
+    if (error) throw error
+
+    const purchases30d = (data || [])
+      .filter((po) => po.status !== 'cancelled')
+      .reduce((sum, po) => sum + (parseFloat(po.total) || 0), 0)
+
+    res.json({ purchases_30d: purchases30d })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// Get supplier by ID — enriched with everything the detail drawer needs in
+// one round trip: AP balance, lifetime stats, AP aging buckets, the
+// products they supply, and the most recent POs/payments.
 router.get('/:id', [
   param('id').isNumeric().withMessage('Invalid supplier ID'),
 ], validate, async (req, res, next) => {
   try {
+    const tenantId = req.user?.tenantId
     const { data, error } = await supabase
       .from('suppliers')
       .select('*')
       .eq('id', req.params.id)
-      .eq('tenant_id', req.user?.tenantId)
+      .eq('tenant_id', tenantId)
       .single()
 
     if (error || !data) {
       return res.status(404).json({ error: 'Supplier not found' })
     }
 
-    res.json(data)
+    const [accountRes, posRes, paysRes, prodsRes] = await Promise.all([
+      data.account_code
+        ? supabase.from('accounts').select('id, balance').eq('code', data.account_code).eq('tenant_id', tenantId).single()
+        : Promise.resolve({ data: null }),
+      supabase.from('purchase_orders')
+        .select('id, order_number, status, total, expected_date, received_date, created_at')
+        .eq('tenant_id', tenantId).eq('supplier_id', data.id)
+        .order('created_at', { ascending: false }),
+      supabase.from('payments')
+        .select('id, payment_number, payment_type, method, amount, payment_date')
+        .eq('tenant_id', tenantId).eq('partner_type', 'supplier').eq('partner_id', data.id)
+        .order('payment_date', { ascending: false }),
+      supabase.from('products')
+        .select('id, name, sku, price, cost_price, stock_quantity, is_active')
+        .eq('tenant_id', tenantId).eq('supplier_id', data.id)
+        .order('name').limit(100),
+    ])
+
+    const balance = parseFloat(accountRes?.data?.balance) || 0
+    const pos = posRes.data || []
+    const pays = paysRes.data || []
+    // The list is newest-first; cancelled orders are not purchases.
+    const billed = pos.filter((po) => po.status !== 'cancelled')
+
+    const stats = {
+      po_count: billed.length,
+      total_purchased: billed.reduce((sum, po) => sum + (parseFloat(po.total) || 0), 0),
+      last_po_date: billed[0]?.created_at || null,
+      payment_count: pays.length,
+      total_paid: pays.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0),
+    }
+
+    // AP aging: walk this supplier's payable account journal oldest-first —
+    // credits are bills (PO receives), debits are payments consumed FIFO
+    // against the oldest bill. Whatever survives is an open bill, bucketed
+    // by age. Liability balances are credit-positive (see accountingEngine),
+    // which is exactly the sign convention this walk assumes.
+    let aging = null
+    if (accountRes?.data?.id) {
+      const { data: lines } = await supabase
+        .from('journal_entry_lines')
+        .select('id, entry_id, debit, credit')
+        .eq('tenant_id', tenantId)
+        .eq('account_id', accountRes.data.id)
+        .order('id')
+
+      if (lines && lines.length > 0) {
+        const entryIds = [...new Set(lines.map((l) => l.entry_id))]
+        const { data: entries } = await supabase
+          .from('journal_entries')
+          .select('id, date')
+          .eq('tenant_id', tenantId)
+          .in('id', entryIds)
+
+        const dateById = new Map((entries || []).map((e) => [e.id, e.date]))
+        const today = new Date().toISOString().slice(0, 10)
+        const ordered = [...lines].sort((a, b) => {
+          const da = dateById.get(a.entry_id) || today
+          const db = dateById.get(b.entry_id) || today
+          return da < db ? -1 : da > db ? 1 : a.id - b.id
+        })
+
+        const open = []
+        for (const line of ordered) {
+          const credit = parseFloat(line.credit) || 0
+          const debit = parseFloat(line.debit) || 0
+          if (credit > 0) open.push({ amount: credit, date: dateById.get(line.entry_id) || today })
+          if (debit > 0) {
+            let left = debit
+            while (left > 0.005 && open.length > 0) {
+              const head = open[0]
+              const applied = Math.min(head.amount, left)
+              head.amount -= applied
+              left -= applied
+              if (head.amount <= 0.005) open.shift()
+            }
+            // Leftover debit = payment bigger than every open bill; the
+            // account balance already reflects it, nothing open to age.
+          }
+        }
+
+        const buckets = { current: 0, d30: 0, d60: 0 }
+        for (const bill of open) {
+          const age = Math.floor((Date.parse(today) - Date.parse(bill.date)) / 86400000)
+          if (age <= 30) buckets.current += bill.amount
+          else if (age <= 60) buckets.d30 += bill.amount
+          else buckets.d60 += bill.amount
+        }
+        aging = { ...buckets, total: buckets.current + buckets.d30 + buckets.d60 }
+      } else {
+        aging = { current: 0, d30: 0, d60: 0, total: 0 }
+      }
+    }
+
+    res.json({
+      ...data,
+      balance,
+      stats,
+      aging,
+      products: prodsRes.data || [],
+      recent_pos: pos.slice(0, 10),
+      recent_payments: pays.slice(0, 10),
+    })
   } catch (err) {
     next(err)
   }
