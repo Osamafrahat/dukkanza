@@ -1,16 +1,28 @@
 import ConfirmModal from '../components/ConfirmModal'
 import SearchableSelect from '../components/SearchableSelect'
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { useUserStore, PERMISSIONS } from '../stores/userStore'
-import { servicesApi } from '../lib/api'
-import { X, Plus, Edit2, Trash2, Wrench, Shield, Settings, Power, Ban } from 'lucide-react'
+import { servicesApi, subscriptionsApi } from '../lib/api'
+import { isSubscriptionValid } from '../lib/subscriptions'
+import { X, Plus, Edit2, Trash2, Wrench, Shield, Settings, Power, Ban, ExternalLink, Users, CreditCard } from 'lucide-react'
 
 const SERVICE_TYPES = [
   { value: 'maintenance', icon: Wrench },
   { value: 'warranty', icon: Shield },
   { value: 'custom', icon: Settings },
 ]
+
+// Module-level so the card AND the detail drawer share one label map.
+const getTypeLabel = (t, type) => {
+  const labels = {
+    maintenance: t('services.typeMaintenance'),
+    warranty: t('services.typeWarranty'),
+    custom: t('services.typeCustom'),
+  }
+  return labels[type] || type
+}
 
 export default function ServicesPage() {
   const { t, language, toastSuccess, toastError } = useAppStore()
@@ -24,6 +36,8 @@ export default function ServicesPage() {
   const [deleting, setDeleting] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [sortBy, setSortBy] = useState('name')
+  // Service whose detail drawer is open (click its name on the card).
+  const [detailService, setDetailService] = useState(null)
 
   useEffect(() => { fetchServices() }, [])
 
@@ -67,15 +81,6 @@ export default function ServicesPage() {
     } catch (err) {
       toastError(err.response?.data?.error || t('common.error') || 'Error')
     }
-  }
-
-  const getTypeLabel = (type) => {
-    const labels = {
-      maintenance: t('services.typeMaintenance'),
-      warranty: t('services.typeWarranty'),
-      custom: t('services.typeCustom'),
-    }
-    return labels[type] || type
   }
 
   // Client-side search + sort: the catalogue is small and always fetched
@@ -177,13 +182,16 @@ className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hov
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <h3 className="font-semibold">{language === 'ar' && service.name_ar ? service.name_ar : service.name}</h3>
+                        <h3
+                          className="font-semibold cursor-pointer hover:text-accent"
+                          onClick={() => setDetailService(service)}
+                        >{language === 'ar' && service.name_ar ? service.name_ar : service.name}</h3>
                         {service.is_active === false && (
                           <span className="text-xs px-2 py-0.5 rounded-full bg-surface-tertiary text-muted font-medium">{t('services.inactive')}</span>
                         )}
                       </div>
 <span className="text-xs px-2 py-0.5 rounded-full bg-surface-tertiary text-muted">
-                        {getTypeLabel(service.service_type)}
+                        {getTypeLabel(t, service.service_type)}
                       </span>
                       {service.name_ar && service.name_ar !== service.name && (
                         <div className="text-xs text-muted mt-0.5">
@@ -241,6 +249,120 @@ className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hov
         type="danger"
         loading={deleting}
       />
+      {detailService && (
+        <ServiceDetailDrawer service={detailService} onClose={() => setDetailService(null)} />
+      )}
+    </div>
+  )
+}
+
+// Detail drawer for a service: subscriber list, collected revenue and
+// type/description metadata, plus the cross-link into the filtered
+// Subscriptions page. Subscriptions + payment history are fetched lazily
+// so the grid never pays for them.
+function ServiceDetailDrawer({ service, onClose }) {
+  const { t, language } = useAppStore()
+  const [subs, setSubs] = useState([])
+  const [paid, setPaid] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    Promise.all([
+      subscriptionsApi.getAll({}).catch(() => ({ data: [] })),
+      subscriptionsApi.getAllPayments().catch(() => ({ data: [] })),
+    ]).then(([subRes, payRes]) => {
+      if (!alive) return
+      setSubs((subRes.data || []).filter((s) => Number(s.service_id) === Number(service.id)))
+      const total = (payRes.data || [])
+        .filter((p) => Number(p.subscription?.service_id) === Number(service.id))
+        .reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0)
+      setPaid(total)
+    }).catch(() => { if (alive) setPaid(0) })
+    return () => { alive = false }
+  }, [service.id])
+
+  const mine = subs
+  // Wrapped: filter passes the index as arg 2, which would clobber the
+  // isSubscriptionValid(sub, today) default parameter.
+  const live = mine.filter((s) => isSubscriptionValid(s))
+  const TypeIcon = SERVICE_TYPES.find((st) => st.value === service.service_type)?.icon || Settings
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative w-full max-w-2xl bg-surface shadow-2xl overflow-y-auto">
+        <div className="sticky top-0 z-10 bg-surface border-b border-border px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-accent-soft rounded-lg"><TypeIcon className="w-5 h-5 text-accent" /></div>
+              <div>
+                <h2 className="text-xl font-bold text-foreground">{language === 'ar' && service.name_ar ? service.name_ar : service.name}</h2>
+                <p className="text-sm text-muted">{getTypeLabel(t, service.service_type)} · {service.price?.toLocaleString()} {t('common.currency')}</p>
+              </div>
+            </div>
+            <button onClick={onClose} className="p-2.5 rounded-lg bg-surface-hover min-w-[44px] min-h-[44px] flex items-center justify-center"><X className="w-5 h-5" /></button>
+          </div>
+        </div>
+
+        <div className="px-6 py-4 space-y-6">
+          <div className="grid grid-cols-3 gap-3">
+            <div className="bg-surface-secondary rounded-xl p-3">
+              <div className="flex items-center gap-1.5 text-xs text-muted mb-1"><Users className="w-3.5 h-3.5" />{t('services.subscribers')}</div>
+              <p className="text-lg font-bold">{live.length}</p>
+            </div>
+            <div className="bg-surface-secondary rounded-xl p-3">
+              <div className="flex items-center gap-1.5 text-xs text-muted mb-1"><CreditCard className="w-3.5 h-3.5" />{t('services.totalPaid')}</div>
+              <p className="text-lg font-bold">{paid === null ? '—' : `${paid.toLocaleString()} ${t('common.currency')}`}</p>
+            </div>
+            <div className="bg-surface-secondary rounded-xl p-3">
+              <div className="flex items-center gap-1.5 text-xs text-muted mb-1"><CreditCard className="w-3.5 h-3.5" />{t('services.price')}</div>
+              <p className="text-lg font-bold">{service.price?.toLocaleString()} {t('common.currency')}</p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="px-2 py-1 rounded-full bg-surface-tertiary text-muted text-xs">{getTypeLabel(t, service.service_type)}</span>
+            {service.is_active === false && (
+              <span className="px-2 py-1 rounded-full bg-surface-tertiary text-muted text-xs font-medium">{t('services.inactive')}</span>
+            )}
+          </div>
+
+          {service.description && <p className="text-sm text-muted">{service.description}</p>}
+          {service.name_ar && service.name_ar !== service.name && (
+            <p className="text-sm text-muted" dir="rtl">{service.name_ar}</p>
+          )}
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold">{t('services.subscribers')}</h3>
+              <Link to={`/subscriptions?service=${service.id}`} className="flex items-center gap-1.5 text-xs font-medium text-accent hover:underline">
+                <ExternalLink className="w-3.5 h-3.5" />
+                {t('customers.viewSubscriptions')}
+              </Link>
+            </div>
+            {mine.length === 0 ? (
+              <p className="text-sm text-muted">{t('services.noSubscriptions')}</p>
+            ) : (
+              <div className="space-y-2">
+                {mine.map((s) => (
+                  <div key={s.id} className="flex items-center justify-between gap-3 p-3 bg-surface-secondary rounded-xl text-sm">
+                    <div className="min-w-0">
+                      <div className="font-medium">{s.customer?.name || `#${s.id}`}</div>
+                      <div className="text-xs text-muted">{s.start_date} → {s.end_date || '—'}</div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className="font-semibold">{s.billing_amount?.toLocaleString()} {t('common.currency')}</span>
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${isSubscriptionValid(s) ? 'bg-success-soft text-success-soft-foreground' : 'bg-danger-soft text-danger-soft-foreground'}`}>
+                        {isSubscriptionValid(s) ? t('services.valid') : t('services.statusExpired')}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

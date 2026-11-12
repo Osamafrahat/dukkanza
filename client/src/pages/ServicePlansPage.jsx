@@ -1,7 +1,8 @@
 import ConfirmModal from '../components/ConfirmModal'
 import SearchableSelect from '../components/SearchableSelect'
-import { X, Plus, Edit2, Trash2, CreditCard, Repeat, Power, Users } from 'lucide-react'
+import { X, Plus, Edit2, Trash2, CreditCard, Repeat, Power, Users, ExternalLink } from 'lucide-react'
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { useUserStore, PERMISSIONS } from '../stores/userStore'
 import { servicePlansApi, subscriptionsApi } from '../lib/api'
@@ -26,6 +27,8 @@ export default function ServicePlansPage() {
   const [deleting, setDeleting] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [sortBy, setSortBy] = useState('name')
+  // Plan whose detail drawer is open (click its name on the card).
+  const [detailPlan, setDetailPlan] = useState(null)
 
   useEffect(() => { fetchPlans() }, [])
 
@@ -176,7 +179,10 @@ className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hov
                 <div className="flex items-start justify-between mb-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <h3 className="font-semibold text-lg">{language === 'ar' && plan.name_ar ? plan.name_ar : plan.name}</h3>
+                      <h3
+                        className="font-semibold text-lg cursor-pointer hover:text-accent"
+                        onClick={() => setDetailPlan(plan)}
+                      >{language === 'ar' && plan.name_ar ? plan.name_ar : plan.name}</h3>
                       {plan.is_active === false && (
                         <span className="text-xs px-2 py-0.5 rounded-full bg-surface-tertiary text-muted font-medium">{t('services.inactive')}</span>
                       )}
@@ -246,6 +252,123 @@ className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hov
       )}
       <ConfirmModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={() => handleDelete(deleteTarget)}
         title={t('services.deletePlan') || 'Delete Plan'} message={t('services.deletePlanConfirm') || 'Are you sure?'} type="danger" loading={deleting} />
+      {detailPlan && (
+        <PlanDetailDrawer plan={detailPlan} subscriptions={subscriptions} onClose={() => setDetailPlan(null)} />
+      )}
+    </div>
+  )
+}
+
+// Detail drawer for a plan: subscriber list, collected revenue and
+// features, plus the cross-link into the filtered Subscriptions page.
+// Payment history is fetched lazily so the grid never pays for it.
+function PlanDetailDrawer({ plan, subscriptions, onClose }) {
+  const { t, language } = useAppStore()
+  const [paid, setPaid] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    subscriptionsApi.getAllPayments()
+      .then(({ data }) => {
+        if (!alive) return
+        const total = (data || [])
+          .filter((p) => Number(p.subscription?.plan_id) === Number(plan.id))
+          .reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0)
+        setPaid(total)
+      })
+      .catch(() => { if (alive) setPaid(0) })
+    return () => { alive = false }
+  }, [plan.id])
+
+  const cycleLabel = t(BILLING_CYCLE_KEYS[plan.billing_cycle] || BILLING_CYCLE_KEYS.monthly)
+  const mine = subscriptions.filter((s) => Number(s.plan_id) === Number(plan.id))
+  // Wrapped: filter passes the index as arg 2, which would clobber the
+  // isSubscriptionValid(sub, today) default parameter.
+  const live = mine.filter((s) => isSubscriptionValid(s))
+  const features = Array.isArray(plan.features) ? plan.features : []
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative w-full max-w-2xl bg-surface shadow-2xl overflow-y-auto">
+        <div className="sticky top-0 z-10 bg-surface border-b border-border px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-accent-soft rounded-lg"><CreditCard className="w-5 h-5 text-accent" /></div>
+              <div>
+                <h2 className="text-xl font-bold text-foreground">{language === 'ar' && plan.name_ar ? plan.name_ar : plan.name}</h2>
+                <p className="text-sm text-muted">{cycleLabel} · {plan.price?.toLocaleString()} {t('common.currency')}</p>
+              </div>
+            </div>
+            <button onClick={onClose} className="p-2.5 rounded-lg bg-surface-hover min-w-[44px] min-h-[44px] flex items-center justify-center"><X className="w-5 h-5" /></button>
+          </div>
+        </div>
+
+        <div className="px-6 py-4 space-y-6">
+          <div className="grid grid-cols-3 gap-3">
+            <div className="bg-surface-secondary rounded-xl p-3">
+              <div className="flex items-center gap-1.5 text-xs text-muted mb-1"><Users className="w-3.5 h-3.5" />{t('services.subscribers')}</div>
+              <p className="text-lg font-bold">{live.length}</p>
+            </div>
+            <div className="bg-surface-secondary rounded-xl p-3">
+              <div className="flex items-center gap-1.5 text-xs text-muted mb-1"><CreditCard className="w-3.5 h-3.5" />{t('services.totalPaid')}</div>
+              <p className="text-lg font-bold">{paid === null ? '—' : `${paid.toLocaleString()} ${t('common.currency')}`}</p>
+            </div>
+            <div className="bg-surface-secondary rounded-xl p-3">
+              <div className="flex items-center gap-1.5 text-xs text-muted mb-1"><Repeat className="w-3.5 h-3.5" />{t('services.price')}</div>
+              <p className="text-lg font-bold">{plan.price?.toLocaleString()} {t('common.currency')}</p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="px-2 py-1 rounded-full bg-accent-soft text-accent-soft-foreground text-xs flex items-center gap-1"><Repeat className="w-3 h-3" />{cycleLabel}</span>
+            {plan.duration_months > 1 && (
+              <span className="px-2 py-1 rounded-full bg-surface-tertiary text-muted text-xs">{plan.duration_months} {t('services.months')}</span>
+            )}
+            {plan.is_active === false && (
+              <span className="px-2 py-1 rounded-full bg-surface-tertiary text-muted text-xs font-medium">{t('services.inactive')}</span>
+            )}
+          </div>
+
+          {features.length > 0 && (
+            <ul className="space-y-1">
+              {features.map((f, i) => (
+                <li key={i} className="text-sm text-muted flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />{f}</li>
+              ))}
+            </ul>
+          )}
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold">{t('services.subscribers')}</h3>
+              <Link to={`/subscriptions?plan=${plan.id}`} className="flex items-center gap-1.5 text-xs font-medium text-accent hover:underline">
+                <ExternalLink className="w-3.5 h-3.5" />
+                {t('customers.viewSubscriptions')}
+              </Link>
+            </div>
+            {mine.length === 0 ? (
+              <p className="text-sm text-muted">{t('services.noSubscriptions')}</p>
+            ) : (
+              <div className="space-y-2">
+                {mine.map((s) => (
+                  <div key={s.id} className="flex items-center justify-between gap-3 p-3 bg-surface-secondary rounded-xl text-sm">
+                    <div className="min-w-0">
+                      <div className="font-medium">{s.customer?.name || `#${s.id}`}</div>
+                      <div className="text-xs text-muted">{s.start_date} → {s.end_date || '—'}</div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className="font-semibold">{s.billing_amount?.toLocaleString()} {t('common.currency')}</span>
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${isSubscriptionValid(s) ? 'bg-success-soft text-success-soft-foreground' : 'bg-danger-soft text-danger-soft-foreground'}`}>
+                        {isSubscriptionValid(s) ? t('services.valid') : t('services.statusExpired')}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

@@ -40,6 +40,8 @@ export default function SubscriptionsPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [sortBy, setSortBy] = useState('newest')
   const [filterCustomerId, setFilterCustomerId] = useState(null)
+  const [filterPlanId, setFilterPlanId] = useState(null)
+  const [filterServiceId, setFilterServiceId] = useState(null)
   const [searchParams] = useSearchParams()
   const [showPayments, setShowPayments] = useState(null)
   const [cancelTarget, setCancelTarget] = useState(null)
@@ -52,10 +54,15 @@ export default function SubscriptionsPage() {
   // made card counts depend on the active filter).
   useEffect(() => { fetchData() }, [])
 
-  // Deep link from the customer drawer: /subscriptions?customer=<id>
+  // Deep links: /subscriptions?customer=<id> (from the customer drawer),
+  // ?plan=<id> / ?service=<id> (from the plan/service detail drawers).
   useEffect(() => {
     const cid = searchParams.get('customer')
     if (cid) setFilterCustomerId(cid)
+    const pid = searchParams.get('plan')
+    if (pid) setFilterPlanId(pid)
+    const sid = searchParams.get('service')
+    if (sid) setFilterServiceId(sid)
   }, [searchParams])
 
   const fetchData = async () => {
@@ -146,9 +153,13 @@ export default function SubscriptionsPage() {
   const filterCustomer = filterCustomerId
     ? customers.find((c) => String(c.id) === String(filterCustomerId))
     : null
+  const filterPlan = filterPlanId ? plans.find((p) => String(p.id) === String(filterPlanId)) : null
+  const filterService = filterServiceId ? services.find((s) => String(s.id) === String(filterServiceId)) : null
   const q = searchQuery.trim().toLowerCase()
   const matched = subscriptions.filter((s) => {
     if (filterCustomerId && String(s.customer_id) !== String(filterCustomerId)) return false
+    if (filterPlanId && String(s.plan_id) !== String(filterPlanId)) return false
+    if (filterServiceId && String(s.service_id) !== String(filterServiceId)) return false
     if (filterStatus === 'expiring') {
       if (!isExpiringSoon(s)) return false
     } else if (filterStatus && s.status !== filterStatus) {
@@ -239,16 +250,22 @@ className={`px-3 py-1.5 rounded-lg text-sm font-medium ${filterStatus===s ?'bg-a
         >
           {t('services.expiring30')}
         </button>
-        {filterCustomer && (
+        {/* Deep-link chips (customer / plan / service) — each clears itself */}
+        {[
+          filterCustomer && { key: 'customer', label: t('services.customer'), name: filterCustomer.name, clear: () => setFilterCustomerId(null) },
+          filterPlan && { key: 'plan', label: t('services.plan'), name: filterPlan.name, clear: () => setFilterPlanId(null) },
+          filterService && { key: 'service', label: t('services.service'), name: filterService.name, clear: () => setFilterServiceId(null) },
+        ].filter(Boolean).map((chip) => (
           <button
-            onClick={() => setFilterCustomerId(null)}
+            key={chip.key}
+            onClick={chip.clear}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-accent-soft text-accent-soft-foreground"
             title={t('common.cancel')}
           >
-            {t('services.customer')}: {filterCustomer.name}
+            {chip.label}: {chip.name}
             <X className="w-3.5 h-3.5" />
           </button>
-        )}
+        ))}
         <input
           type="text"
           placeholder={t('services.searchSubsPlaceholder')}

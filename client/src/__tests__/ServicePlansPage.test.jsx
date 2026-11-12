@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, cleanup, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, cleanup, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
 // Service Plans got the same catalogue shell as Services, plus a
@@ -20,7 +20,11 @@ vi.mock('../lib/api', () => {
       update: vi.fn(),
       delete: vi.fn(),
     },
-    subscriptionsApi: { getAll: ok([]) },
+    subscriptionsApi: {
+      getAll: ok([]),
+      // Feeds the detail drawer (collected revenue).
+      getAllPayments: ok([]),
+    },
   }
 })
 
@@ -50,9 +54,9 @@ beforeEach(() => {
     data: [
       // Two rows reference plan 1, but the second one already ended —
       // only the first counts as a subscriber.
-      { id: 11, plan_id: 1, status: 'active', end_date: dayStr(50) },
-      { id: 12, plan_id: 1, status: 'active', end_date: dayStr(-5) },
-      { id: 13, plan_id: 2, status: 'active', end_date: dayStr(200) },
+      { id: 11, plan_id: 1, status: 'active', start_date: '2026-01-01', end_date: dayStr(50) },
+      { id: 12, plan_id: 1, status: 'active', start_date: '2026-01-01', end_date: dayStr(-5) },
+      { id: 13, plan_id: 2, status: 'active', start_date: '2026-01-01', end_date: dayStr(200) },
     ],
   })
 })
@@ -149,5 +153,54 @@ describe('ServicePlansPage — delete guard (409)', () => {
     const toast = useAppStore.getState().toasts.at(-1)
     expect(toast.type).toBe('error')
     expect(toast.message).toContain('Plan is used by 3 subscription(s)')
+  })
+})
+
+describe('ServicePlansPage — detail drawer', () => {
+  it('opens from the plan name with subscribers, revenue and the cross-link', async () => {
+    subscriptionsApi.getAllPayments.mockResolvedValue({
+      data: [
+        { id: 1, amount: 300, subscription: { plan_id: 1 } },
+        { id: 2, amount: 300, subscription: { plan_id: 1 } },
+        // Plan 2's money — must not leak into plan 1's total.
+        { id: 3, amount: 100, subscription: { plan_id: 2 } },
+      ],
+    })
+    renderPage()
+    await screen.findByRole('heading', { name: 'Pro Plan' })
+
+    fireEvent.click(screen.getByRole('heading', { name: 'Pro Plan' }))
+
+    const drawerHeading = await screen.findByRole('heading', { level: 2, name: 'Pro Plan' })
+    expect(subscriptionsApi.getAllPayments).toHaveBeenCalledTimes(1)
+
+    // Revenue = payments pointing at plan 1 (300 + 300), not plan 2's 100.
+    expect(await screen.findByText('600 EGP')).toBeTruthy()
+    // Validity-aware live count for THIS plan: rows 11 (live) + 12 (ended) → 1.
+    const drawer = drawerHeading.closest('div.fixed')
+    const statLabel = within(drawer).getByText((content, el) => el.tagName === 'DIV' && content.trim() === 'Subscribers')
+    expect(statLabel.parentElement.querySelector('p').textContent).toBe('1')
+    // Both rows are listed; the ended one is pill-marked Expired.
+    expect(within(drawer).getByText('#11')).toBeTruthy()
+    expect(within(drawer).getByText('#12')).toBeTruthy()
+    expect(within(drawer).getByText('Expired')).toBeTruthy()
+    // Features render from plan.features.
+    expect(within(drawer).getByText('Priority support')).toBeTruthy()
+
+    const link = screen.getByRole('link', { name: /View in Subscriptions/ })
+    expect(link.getAttribute('href')).toBe('/subscriptions?plan=1')
+  })
+
+  it('shows the empty-subscriber branch for a plan nobody bought', async () => {
+    subscriptionsApi.getAll.mockResolvedValue({ data: [] })
+    subscriptionsApi.getAllPayments.mockResolvedValue({ data: [] })
+    renderPage()
+    await screen.findByRole('heading', { name: 'Pro Plan' })
+
+    fireEvent.click(screen.getByRole('heading', { name: 'Pro Plan' }))
+
+    expect(await screen.findByRole('heading', { level: 2, name: 'Pro Plan' })).toBeTruthy()
+    expect(await screen.findByText('No subscriptions yet')).toBeTruthy()
+    expect(await screen.findByText('0 EGP')).toBeTruthy()
   })
 })

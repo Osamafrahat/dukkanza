@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, cleanup, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, cleanup, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
 // Services got the catalogue shell the Suppliers/Customers pages have:
@@ -20,11 +20,16 @@ vi.mock('../lib/api', () => {
       update: vi.fn(),
       delete: vi.fn(),
     },
+    // Feeds the detail drawer (subscribers + collected revenue).
+    subscriptionsApi: {
+      getAll: ok([]),
+      getAllPayments: ok([]),
+    },
   }
 })
 
 import ServicesPage from '../pages/ServicesPage'
-import { servicesApi } from '../lib/api'
+import { servicesApi, subscriptionsApi } from '../lib/api'
 import { useUserStore } from '../stores/userStore'
 import { useAppStore } from '../stores/appStore'
 
@@ -171,5 +176,72 @@ describe('ServicesPage — delete guard (409)', () => {
     const toast = useAppStore.getState().toasts.at(-1)
     expect(toast.type).toBe('error')
     expect(toast.message).toContain('Service is used by 3 subscription(s)')
+  })
+})
+
+describe('ServicesPage — detail drawer', () => {
+  const dayStr = (offset) => {
+    const d = new Date(Date.now() + offset * 86400000)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+
+  it('opens from the card name with subscribers, revenue and the cross-link', async () => {
+    subscriptionsApi.getAll.mockResolvedValue({
+      data: [
+        // Live subscriber (ends in 30 days)...
+        { id: 7, service_id: 1, status: 'active', start_date: '2026-01-01', end_date: dayStr(30), billing_amount: 90, customer: { id: 1, name: 'Acme' } },
+        // ...and one that already ended (history, not a subscriber).
+        { id: 8, service_id: 1, status: 'active', start_date: '2026-01-01', end_date: dayStr(-3), billing_amount: 90, customer: { id: 2, name: 'Beta' } },
+        // Belongs to another service — must not leak into this drawer.
+        { id: 9, service_id: 3, status: 'active', start_date: '2026-01-01', end_date: dayStr(30), billing_amount: 90, customer: { id: 3, name: 'Gamma Co' } },
+      ],
+    })
+    subscriptionsApi.getAllPayments.mockResolvedValue({
+      data: [
+        { id: 1, amount: 40, subscription: { service_id: 1 } },
+        { id: 2, amount: 50, subscription: { service_id: 1 } },
+        { id: 3, amount: 999, subscription: { service_id: 3 } },
+      ],
+    })
+    renderPage()
+    await screen.findByRole('heading', { name: 'Alpha' })
+
+    fireEvent.click(screen.getByRole('heading', { name: 'Alpha' }))
+
+    const drawerHeading = await screen.findByRole('heading', { level: 2, name: 'Alpha' })
+    expect(subscriptionsApi.getAll).toHaveBeenCalledWith({})
+    expect(subscriptionsApi.getAllPayments).toHaveBeenCalledTimes(1)
+
+    // Revenue = payments pointing at service 1 (40 + 50), not service 3's 999.
+    // (Scoped to the stat card: a subscriber row also shows '90 EGP'.)
+    const drawer = drawerHeading.closest('div.fixed')
+    const paidLabel = within(drawer).getByText((content, el) => el.tagName === 'DIV' && content.trim() === 'Total Paid')
+    expect(paidLabel.parentElement.querySelector('p').textContent).toBe('90 EGP')
+    // Validity-aware live count: the ended row doesn't count.
+    const statLabel = within(drawer).getByText((content, el) => el.tagName === 'DIV' && content.trim() === 'Subscribers')
+    expect(statLabel.parentElement.querySelector('p').textContent).toBe('1')
+    // Both service-1 rows are listed, with validity pills; the other service's isn't.
+    expect(within(drawer).getByText('Acme')).toBeTruthy()
+    expect(within(drawer).getByText('Beta')).toBeTruthy()
+    expect(screen.queryByText('Gamma Co')).toBeNull()
+    expect(within(drawer).getByText('Valid')).toBeTruthy()
+    expect(within(drawer).getByText('Expired')).toBeTruthy()
+
+    const link = screen.getByRole('link', { name: /View in Subscriptions/ })
+    expect(link.getAttribute('href')).toBe('/subscriptions?service=1')
+  })
+
+  it('shows the empty-subscriber branch for a service nobody bought', async () => {
+    subscriptionsApi.getAll.mockResolvedValue({ data: [] })
+    subscriptionsApi.getAllPayments.mockResolvedValue({ data: [] })
+    renderPage()
+    await screen.findByRole('heading', { name: 'Alpha' })
+
+    fireEvent.click(screen.getByRole('heading', { name: 'Alpha' }))
+
+    expect(await screen.findByRole('heading', { level: 2, name: 'Alpha' })).toBeTruthy()
+    expect(await screen.findByText('No subscriptions yet')).toBeTruthy()
+    // Revenue resolves to zero rather than hanging on the dash.
+    expect(await screen.findByText('0 EGP')).toBeTruthy()
   })
 })

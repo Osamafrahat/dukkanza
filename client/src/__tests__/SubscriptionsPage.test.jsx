@@ -203,6 +203,29 @@ describe('SubscriptionsPage — customer deep link', () => {
   })
 })
 
+describe('SubscriptionsPage — plan/service deep links', () => {
+  it('applies ?plan=<id> as a removable filter chip', async () => {
+    renderPage(['/subscriptions?plan=1'])
+
+    expect(await screen.findByText((content, el) => el.tagName === 'BUTTON' && content.includes('Plan: Pro Plan'))).toBeTruthy()
+    // Subs 1, 2 and 4 carry plan_id 1; the service-backed sub 3 drops out.
+    expect(screen.getAllByRole('link', { name: 'Acme' })).toHaveLength(1)
+    expect(screen.getAllByRole('link', { name: 'Beta' })).toHaveLength(2)
+    // A filter, not a query param — still one unfiltered fetch.
+    expect(subscriptionsApi.getAll).toHaveBeenCalledWith({})
+    expect(subscriptionsApi.getAll).toHaveBeenCalledTimes(1)
+  })
+
+  it('applies ?service=<id> as a removable filter chip', async () => {
+    renderPage(['/subscriptions?service=5'])
+
+    expect(await screen.findByText((content, el) => el.tagName === 'BUTTON' && content.includes('Service: Cleanup'))).toBeTruthy()
+    // Only sub 3 is service-backed.
+    expect(screen.getAllByRole('link', { name: 'Acme' })).toHaveLength(1)
+    expect(screen.queryByRole('link', { name: 'Beta' })).toBeNull()
+  })
+})
+
 describe('SubscriptionsPage — renew modal', () => {
   it('renews with the chosen payment method', async () => {
     renderPage()

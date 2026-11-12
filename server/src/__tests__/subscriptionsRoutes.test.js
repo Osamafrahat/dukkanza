@@ -24,6 +24,7 @@ process.env.SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'test-anon'
 
 const queues = new Map()
 const insertCalls = []
+const selectCalls = []
 
 function enqueue(table, ...results) {
   if (!queues.has(table)) queues.set(table, [])
@@ -37,9 +38,14 @@ function nextResult(table) {
 
 function makeFrom(table) {
   const chain = {}
-  for (const m of ['select', 'eq', 'in', 'order', 'limit', 'range', 'gte', 'lte', 'neq', 'or', 'update']) {
+  for (const m of ['eq', 'in', 'order', 'limit', 'range', 'gte', 'lte', 'neq', 'or', 'update']) {
     chain[m] = jest.fn(() => chain)
   }
+  // Recorded so tests can pin the join shape (select strings).
+  chain.select = jest.fn((...args) => {
+    selectCalls.push({ table, args })
+    return chain
+  })
   chain.insert = jest.fn((payload) => {
     insertCalls.push({ table, payload })
     return chain
@@ -80,7 +86,27 @@ app.use('/api/subscriptions', asUser, subscriptionsRouter)
 beforeEach(() => {
   queues.clear()
   insertCalls.length = 0
+  selectCalls.length = 0
   jest.clearAllMocks()
+})
+
+describe('GET /subscriptions/payments/all — embedded join shape', () => {
+  it('exposes plan_id and service_id on the embedded subscription', async () => {
+    enqueue('subscription_payments', {
+      data: [{ id: 1, amount: 100, subscription: { id: 7, plan_id: 5, service_id: 9, status: 'active' } }],
+      error: null,
+    })
+
+    const res = await request(app).get('/api/subscriptions/payments/all')
+
+    expect(res.status).toBe(200)
+    expect(res.body[0].subscription.plan_id).toBe(5)
+    expect(res.body[0].subscription.service_id).toBe(9)
+    // The join itself must keep selecting service_id — the service detail
+    // drawer aggregates collected revenue from this field.
+    const paymentSelect = selectCalls.find((c) => c.table === 'subscription_payments')
+    expect(paymentSelect.args[0]).toContain('service_id')
+  })
 })
 
 const PAST = '2000-01-01'

@@ -19,7 +19,9 @@ router.get('/payments/all', async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('subscription_payments')
-      .select('*, subscription:subscriptions(id, customer_id, plan_id, status, customer:customers(id, name), plan:service_plans(id, name, billing_cycle))')
+      // service_id rides along too: the service detail drawer aggregates
+      // collected revenue per service from this endpoint.
+      .select('*, subscription:subscriptions(id, customer_id, plan_id, service_id, status, customer:customers(id, name), plan:service_plans(id, name, billing_cycle))')
       .eq('tenant_id', req.user?.tenantId)
       .order('payment_date', { ascending: false })
       .limit(500)
