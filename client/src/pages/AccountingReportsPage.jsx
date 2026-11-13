@@ -14,12 +14,14 @@ export default function AccountingReportsPage() {
   const [loading, setLoading] = useState(false)
   const [closeTarget, setCloseTarget] = useState(null)
   const [closing, setClosing] = useState(false)
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
 
   useEffect(() => {
     loadReport()
     loadFiscalPeriods()
   // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberate trigger list: the loader below is re-created each render and is intentionally NOT a dep, so only these inputs refetch
-  }, [activeTab])
+  }, [activeTab, dateFrom, dateTo])
 
   const loadReport = async () => {
     setLoading(true)
@@ -31,11 +33,15 @@ export default function AccountingReportsPage() {
         const { data } = await accountingReportsApi.getBalanceSheet()
         setBalanceSheet(data)
       } else if (activeTab === 'profit-loss') {
-        const { data } = await accountingReportsApi.getProfitLoss()
+        const { data } = await accountingReportsApi.getProfitLoss({
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+        })
         setProfitLoss(data)
       }
     } catch (err) {
       console.error(err)
+      toastError(err.response?.data?.error || t('common.failed'))
     } finally { setLoading(false) }
   }
 
@@ -43,7 +49,10 @@ export default function AccountingReportsPage() {
     try {
       const { data } = await accountingReportsApi.getFiscalPeriods()
       setFiscalPeriods(data)
-    } catch (err) { console.error(err) }
+    } catch (err) {
+      console.error(err)
+      toastError(err.response?.data?.error || t('common.failed'))
+    }
   }
 
   const handleClosePeriod = async (id) => {
@@ -54,7 +63,7 @@ export default function AccountingReportsPage() {
       loadFiscalPeriods()
       setCloseTarget(null)
     } catch (err) {
-      toastError(err.response?.data?.error || 'Failed')
+      toastError(err.response?.data?.error || t('common.failed'))
     } finally {
       setClosing(false)
     }
@@ -144,8 +153,27 @@ className={`flex items-center gap-2 px-4 py-2 rounded-xl font-medium text-sm whi
           {/* Trial Balance */}
           {activeTab === 'trial-balance' && trialBalance && (
 <div className="bg-surface rounded-2xl shadow-sm border border-border overflow-hidden">
-<div className="px-4 sm:px-6 py-4 border-b border-border">
+<div className="px-4 sm:px-6 py-4 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <h2 className="text-lg font-bold">{t('accounting.trialBalance')}</h2>
+                <span className={`self-start px-2.5 py-1 rounded-lg text-xs font-bold ${trialBalance.isBalanced ? 'bg-success-soft text-success-soft-foreground' : 'bg-danger-soft text-danger-soft-foreground'}`}>
+                  {trialBalance.isBalanced ? t('accounting.balanced') : t('accounting.unbalanced')}
+                </span>
+              </div>
+              <div className="px-4 sm:px-6 py-4 grid grid-cols-1 sm:grid-cols-3 gap-3 border-b border-border">
+                <div className="rounded-xl bg-surface-secondary p-3">
+                  <p className="text-xs uppercase tracking-wider text-muted">{t('accounting.totalDebit')}</p>
+                  <p className="text-lg font-bold font-mono">{formatAmount(trialBalance.totalDebit)}</p>
+                </div>
+                <div className="rounded-xl bg-surface-secondary p-3">
+                  <p className="text-xs uppercase tracking-wider text-muted">{t('accounting.totalCredit')}</p>
+                  <p className="text-lg font-bold font-mono">{formatAmount(trialBalance.totalCredit)}</p>
+                </div>
+                <div className="rounded-xl bg-surface-secondary p-3">
+                  <p className="text-xs uppercase tracking-wider text-muted">{t('accounting.accountsCount')}</p>
+                  <p className="text-lg font-bold font-mono">
+                    {['asset', 'liability', 'equity', 'revenue', 'expense'].reduce((sum, type) => sum + (trialBalance.accounts[type]?.length || 0), 0)}
+                  </p>
+                </div>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[480px]">
@@ -168,18 +196,28 @@ className={`flex items-center gap-2 px-4 py-2 rounded-xl font-medium text-sm whi
                               </span>
                             </td>
                           </tr>
-                          {trialBalance.accounts[type].map(acc => (
+                          {trialBalance.accounts[type].map(acc => {
+                            // Type-aware columns mirroring the server totals:
+                            // asset/expense are debit-normal, liability/equity/
+                            // revenue are credit-normal. A negative balance on
+                            // a debit-normal account belongs in the CREDIT
+                            // column (and vice versa) — sign alone lies.
+                            const debitNormal = type === 'asset' || type === 'expense'
+                            const balance = parseFloat(acc.balance) || 0
+                            const onDebitSide = debitNormal ? balance >= 0 : balance < 0
+                            return (
 <tr key={acc.id}className="border-b border-border bg-surface-hover transition-colors">
 <td className="px-4 sm:px-6 py-2.5 text-sm font-mono font-bold text-foreground">{acc.code}</td>
 <td className="px-4 sm:px-6 py-2.5 text-sm text-foreground">{getAccountName(acc)}</td>
 <td className="px-4 sm:px-6 py-2.5 text-sm text-end font-mono font-medium text-foreground">
-                                {acc.balance >= 0 ? formatAmount(acc.balance) : ''}
+                                {onDebitSide ? formatAmount(Math.abs(balance)) : ''}
                               </td>
 <td className="px-4 sm:px-6 py-2.5 text-sm text-end font-mono font-medium text-foreground">
-                                {acc.balance < 0 ? formatAmount(Math.abs(acc.balance)) : ''}
+                                {!onDebitSide ? formatAmount(Math.abs(balance)) : ''}
                               </td>
                             </tr>
-                          ))}
+                            )
+                          })}
                         </Fragment>
                       )
                     ))}
@@ -199,8 +237,25 @@ className={`flex items-center gap-2 px-4 py-2 rounded-xl font-medium text-sm whi
           {/* Balance Sheet */}
           {activeTab === 'balance-sheet' && balanceSheet && (
 <div className="bg-surface rounded-2xl shadow-sm border border-border overflow-hidden">
-<div className="px-6 py-4 border-b border-border">
+<div className="px-6 py-4 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <h2 className="text-lg font-bold">{t('accounting.balanceSheet')}</h2>
+                <span className={`self-start px-2.5 py-1 rounded-lg text-xs font-bold ${balanceSheet.isBalanced ? 'bg-success-soft text-success-soft-foreground' : 'bg-danger-soft text-danger-soft-foreground'}`}>
+                  {balanceSheet.isBalanced ? t('accounting.balanced') : t('accounting.unbalanced')}
+                </span>
+              </div>
+              <div className="px-6 py-4 grid grid-cols-1 sm:grid-cols-3 gap-3 border-b border-border">
+                <div className="rounded-xl bg-surface-secondary p-3">
+                  <p className="text-xs uppercase tracking-wider text-muted">{t('accounting.totalAssets')}</p>
+                  <p className="text-lg font-bold font-mono">{formatAmount(balanceSheet.assets.total)}</p>
+                </div>
+                <div className="rounded-xl bg-surface-secondary p-3">
+                  <p className="text-xs uppercase tracking-wider text-muted">{t('accounting.totalLiabilities')}</p>
+                  <p className="text-lg font-bold font-mono">{formatAmount(balanceSheet.liabilities.total)}</p>
+                </div>
+                <div className="rounded-xl bg-surface-secondary p-3">
+                  <p className="text-xs uppercase tracking-wider text-muted">{t('accounting.totalEquity')}</p>
+                  <p className="text-lg font-bold font-mono">{formatAmount(balanceSheet.equity.total)}</p>
+                </div>
               </div>
               <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
                 {/* Assets */}
@@ -266,8 +321,42 @@ className={`flex items-center gap-2 px-4 py-2 rounded-xl font-medium text-sm whi
           {/* Profit & Loss */}
           {activeTab === 'profit-loss' && profitLoss && (
 <div className="bg-surface rounded-2xl shadow-sm border border-border overflow-hidden">
-<div className="px-6 py-4 border-b border-border">
+<div className="px-6 py-4 border-b border-border flex flex-col lg:flex-row lg:items-end justify-between gap-3">
                 <h2 className="text-lg font-bold">{t('accounting.profitLoss')}</h2>
+                <div className="flex flex-wrap items-end gap-3">
+                  <label className="flex flex-col gap-1 text-xs font-medium text-muted">
+                    {t('common.startDate')}
+                    <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
+                      className="px-3 py-2 rounded-xl border border-border bg-surface text-sm text-foreground outline-none ring-focus" />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-muted">
+                    {t('common.endDate')}
+                    <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
+                      className="px-3 py-2 rounded-xl border border-border bg-surface text-sm text-foreground outline-none ring-focus" />
+                  </label>
+                  {(dateFrom || dateTo) && (
+                    <button onClick={() => { setDateFrom(''); setDateTo('') }}
+                      className="px-3 py-2 min-h-[40px] text-sm font-medium text-muted hover:text-foreground rounded-xl border border-border">
+                      {t('common.clear')}
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="px-6 py-4 grid grid-cols-1 sm:grid-cols-3 gap-3 border-b border-border">
+                <div className="rounded-xl bg-surface-secondary p-3">
+                  <p className="text-xs uppercase tracking-wider text-muted">{t('accounting.totalRevenue')}</p>
+                  <p className="text-lg font-bold font-mono text-success">{formatAmount(profitLoss.totalRevenue)}</p>
+                </div>
+                <div className="rounded-xl bg-surface-secondary p-3">
+                  <p className="text-xs uppercase tracking-wider text-muted">{t('accounting.totalExpenses')}</p>
+                  <p className="text-lg font-bold font-mono text-warning">{formatAmount(profitLoss.totalExpenses)}</p>
+                </div>
+                <div className="rounded-xl bg-surface-secondary p-3">
+                  <p className="text-xs uppercase tracking-wider text-muted">{profitLoss.netIncome >= 0 ? t('accounting.netIncome') : t('accounting.netLoss')}</p>
+                  <p className={`text-lg font-bold font-mono ${profitLoss.netIncome >= 0 ? 'text-success' : 'text-danger'}`}>
+                    {formatAmount(profitLoss.netIncome)}
+                  </p>
+                </div>
               </div>
               <div className="p-6 space-y-6">
                 {/* Revenue */}

@@ -1,19 +1,33 @@
 import ConfirmModal from '../components/ConfirmModal'
 import SearchableSelect from '../components/SearchableSelect'
-import { Plus, Search, Eye, RotateCcw, Save, X } from 'lucide-react'
+import { Plus, Search, Eye, RotateCcw, Save, X, CheckCircle } from 'lucide-react'
 import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { journalsApi, accountsApi } from '../lib/api'
 import { translateDescription } from '../lib/translateDescription'
 
+// Every source_type the accounting engine can emit (see accountingEngine.js);
+// each has an accounting.source* translation key.
+const SOURCE_TYPES = [
+  'manual', 'order', 'refund', 'expense', 'subscription_payment', 'stock_receive',
+  'stock_adjust', 'production', 'reversal', 'payment', 'purchase_order',
+  'initial_capital', 'credit_payment', 'closing',
+]
+
 export default function JournalEntriesPage() {
   const { t, toastSuccess, toastError } = useAppStore()
+  const [searchParams] = useSearchParams()
   const [entries, setEntries] = useState([])
   const [accounts, setAccounts] = useState([])
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
-  const [search, setSearch] = useState('')
+  // Deep link from other pages (e.g. account ledger → journals?search=<code>)
+  const [search, setSearch] = useState(() => searchParams.get('search') || '')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [sourceType, setSourceType] = useState('')
   const [showForm, setShowForm] = useState(false)
   const [showDetail, setShowDetail] = useState(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -39,14 +53,26 @@ export default function JournalEntriesPage() {
   })
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberate trigger list: the loader below is re-created each render and is intentionally NOT a dep, so only these inputs refetch
-  useEffect(() => { fetchEntries(); fetchAccounts() }, [page, search])
+  useEffect(() => { fetchEntries() }, [page, search, dateFrom, dateTo, sourceType])
+  // accounts are fetched once; they never depend on the entry filters above
+  useEffect(() => { fetchAccounts() }, [])
 
   const fetchEntries = async () => {
     try {
-      const { data } = await journalsApi.getAll({ page, limit: 20, search })
+      const { data } = await journalsApi.getAll({
+        page,
+        limit: 20,
+        search: search || undefined,
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+        source_type: sourceType || undefined,
+      })
       setEntries(data.data)
       setTotal(data.total)
-    } catch (err) { console.error(err) }
+    } catch (err) {
+      console.error(err)
+      toastError(err.response?.data?.error || t('common.failed'))
+    }
     finally { setLoading(false) }
   }
 
@@ -123,10 +149,43 @@ export default function JournalEntriesPage() {
         </button>
       </div>
 
-      {/* Search */}
-      <div className="relative">
+      {/* Summary cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="bg-surface rounded-2xl shadow-sm border border-border p-4">
+          <p className="text-xs uppercase tracking-wider text-muted">{t('accounting.totalEntries')}</p>
+          <p className="text-2xl font-bold">{total}</p>
+        </div>
+        <div className="bg-surface rounded-2xl shadow-sm border border-border p-4">
+          <p className="text-xs uppercase tracking-wider text-muted">{t('accounting.entriesInList')}</p>
+          <p className="text-2xl font-bold">{entries.length}</p>
+        </div>
+        <div className="bg-surface rounded-2xl shadow-sm border border-border p-4 flex flex-col justify-center">
+          <p className="text-xs uppercase tracking-wider text-muted mb-1">{t('accounting.filters')}</p>
+          <p className="text-sm text-muted">
+            {[dateFrom && `${t('common.startDate')}: ${dateFrom}`, dateTo && `${t('common.endDate')}: ${dateTo}`, sourceType && t('accounting.source' + sourceType.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(''))].filter(Boolean).join(' · ') || t('common.none')}
+          </p>
+        </div>
+      </div>
+
+      {/* Search + filters */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="relative flex-1">
 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted"/>
 <input type="text"value={search}onChange={e=>{setSearch(e.target.value);setPage(1)}}placeholder={t('common.search')||'Search...'}className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-border bg-surface ring-focus outline-none"/>
+        </div>
+        <input type="date" value={dateFrom} onChange={e=>{setDateFrom(e.target.value);setPage(1)}}
+          aria-label={t('common.startDate')}
+          className="px-3 py-2.5 rounded-xl border border-border bg-surface ring-focus outline-none text-sm"/>
+        <input type="date" value={dateTo} onChange={e=>{setDateTo(e.target.value);setPage(1)}}
+          aria-label={t('common.endDate')}
+          className="px-3 py-2.5 rounded-xl border border-border bg-surface ring-focus outline-none text-sm"/>
+<SearchableSelect options={[{value:'',label:t('common.all')},...SOURCE_TYPES.map(s=>({value:s,label:t('accounting.source'+s.split('_').map(w=>w.charAt(0).toUpperCase()+ w.slice(1)).join(''))}))]}value={sourceType}onChange={v=>{setSourceType(v);setPage(1)}}placeholder={t('accounting.source')}className="px-4 py-2.5 rounded-xl border border-border bg-surface ring-focus outline-none"/>
+        {(dateFrom || dateTo || sourceType || search) && (
+          <button onClick={()=>{setDateFrom('');setDateTo('');setSourceType('');setSearch('');setPage(1)}}
+            className="px-4 py-2.5 rounded-xl border border-border bg-surface-hover text-sm font-medium text-muted hover:text-foreground">
+            {t('common.clear')}
+          </button>
+        )}
       </div>
 
       {/* Create Form Modal */}
@@ -171,7 +230,7 @@ export default function JournalEntriesPage() {
 <span className={`font-medium ${Math.abs(totalDebit - totalCredit)>0.01 ?'text-danger':'text-success'}`}>
                   {t('accounting.credit') || 'Credit'}: {totalCredit.toFixed(2)}
                 </span>
-{isBalanced &&<span className="text-success font-bold">âœ“ Balanced</span>}
+{isBalanced &&<span className="text-success font-bold flex items-center gap-1"><CheckCircle className="w-4 h-4" /> {t('accounting.balanced')}</span>}
               </div>
               <div className="flex gap-3">
 <button onClick={handleSubmit}disabled={!isBalanced}className="px-5 py-2.5 bg-accent hover:bg-primary-700 disabled:opacity-50 text-white rounded-xl font-medium flex items-center gap-2">

@@ -29,34 +29,28 @@ router.get('/trial-balance', async (req, res) => {
       expense: safeAccounts.filter(a => a.account_type === 'expense'),
     }
 
-    const totalDebit = safeAccounts
-      .filter(a => ['asset', 'expense'].includes(a.account_type) && a.balance > 0)
-      .reduce((sum, a) => sum + a.balance, 0)
-
-    const totalCredit = safeAccounts
-      .filter(a => ['liability', 'equity', 'revenue'].includes(a.account_type) && a.balance > 0)
-      .reduce((sum, a) => sum + a.balance, 0)
-
-    // Also include negative balances on the opposite side
-    const totalDebitAll = safeAccounts
-      .filter(a => a.balance > 0)
-      .reduce((sum, a) => {
-        if (['asset', 'expense'].includes(a.account_type)) return sum + a.balance
-        return sum
-      }, 0)
-
-    const totalCreditAll = safeAccounts
-      .filter(a => a.balance > 0)
-      .reduce((sum, a) => {
-        if (['liability', 'equity', 'revenue'].includes(a.account_type)) return sum + a.balance
-        return sum
-      }, 0)
+    // Type-aware side assignment: a debit-normal account (asset/expense)
+    // with a negative balance is an overdrawn credit — it belongs on the
+    // credit side, and vice versa. Filtering on sign alone (the old code)
+    // dropped every negative balance from BOTH sides, so a tenant with one
+    // overdrawn account always looked unbalanced.
+    const DEBIT_TYPES = ['asset', 'expense']
+    let totalDebit = 0
+    let totalCredit = 0
+    for (const a of safeAccounts) {
+      const balance = parseFloat(a.balance) || 0
+      const debitNormal = DEBIT_TYPES.includes(a.account_type)
+      const onDebitSide = debitNormal ? balance >= 0 : balance < 0
+      const magnitude = Math.abs(balance)
+      if (onDebitSide) totalDebit += magnitude
+      else totalCredit += magnitude
+    }
 
     res.json({
       accounts: grouped,
-      totalDebit: totalDebitAll,
-      totalCredit: totalCreditAll,
-      isBalanced: Math.abs(totalDebitAll - totalCreditAll) < 0.01,
+      totalDebit,
+      totalCredit,
+      isBalanced: Math.abs(totalDebit - totalCredit) < 0.01,
     })
   } catch (err) {
     console.error('Trial balance error:', err)

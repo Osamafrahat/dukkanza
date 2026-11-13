@@ -118,7 +118,13 @@ router.delete('/:id', async (req, res) => {
       .eq('account_id', req.params.id)
 
     if (count > 0) {
-      return res.status(400).json({ error: 'Cannot delete account with existing journal entries' })
+      // 409 (not 400): "in use" is a conflict, not a malformed request —
+      // mirrors the services/plans guard so the client can distinguish it
+      // and show the count-bearing message.
+      return res.status(409).json({
+        error: `Account is used by ${count} journal line(s) — deactivate it instead`,
+        entry_count: count,
+      })
     }
 
     const { error } = await supabase.from('accounts').delete().eq('tenant_id', req.user.tenantId).eq('id', req.params.id)

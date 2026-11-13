@@ -1,9 +1,19 @@
 import ConfirmModal from '../components/ConfirmModal'
-import { Plus, Search, Edit2, Trash2, Save, X, RefreshCw, Landmark } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Plus, Search, Edit2, Trash2, Save, X, RefreshCw, Landmark, Eye, CheckCircle, XCircle, FileText, Scale } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useAppStore } from '../stores/appStore'
-import api, { accountsApi } from '../lib/api'
+import api, { accountsApi, accountingReportsApi } from '../lib/api'
+import { translateDescription } from '../lib/translateDescription'
 import SearchableSelect from '../components/SearchableSelect'
+
+// Bilingual chart of accounts: names resolve through the
+// accounting.account.<code> translation key when one exists, else the raw row.
+const getAccountName = (t, account) => {
+  const key = `accounting.account.${account.code}`
+  const translated = t(key)
+  return translated !== key ? translated : account.name
+}
 
 export default function ChartOfAccountsPage() {
   const { t, toastSuccess, toastError } = useAppStore()
@@ -11,6 +21,9 @@ export default function ChartOfAccountsPage() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filterType, setFilterType] = useState('')
+  const [filterStatus, setFilterStatus] = useState('')
+  const [sortBy, setSortBy] = useState('code')
+  const [ledgerTarget, setLedgerTarget] = useState(null)
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [formData, setFormData] = useState({ code: '', name: '', account_type: 'asset', description: '' })
@@ -21,12 +34,6 @@ export default function ChartOfAccountsPage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleting, setDeleting] = useState(false)
-
-  const getAccountName = (account) => {
-    const key = `accounting.account.${account.code}`
-    const translated = t(key)
-    return translated !== key ? translated : account.name
-  }
 
   const ACCOUNT_TYPES = {
 asset:{label: t('accounting.asset')||'Asset',color:'bg-accent-soft text-accent-soft-foreground'},
@@ -41,9 +48,15 @@ expense:{label: t('accounting.expenseType')||'Expense',color:'bg-warning-soft te
 
   const fetchAccounts = async () => {
     try {
-      const { data } = await accountsApi.getAll({ search, type: filterType })
+      // Single unfiltered fetch: search/type/status filtering all happen
+      // client-side below (filteredAccounts), so request params here would
+      // just double-filter and hide rows the client filter would keep.
+      const { data } = await accountsApi.getAll()
       setAccounts(data)
-    } catch (err) { console.error(err) }
+    } catch (err) {
+      console.error(err)
+      toastError(err.response?.data?.error || t('common.failed'))
+    }
     finally { setLoading(false) }
   }
 
@@ -122,20 +135,52 @@ expense:{label: t('accounting.expenseType')||'Expense',color:'bg-warning-soft te
       toastSuccess(t('accounting.accountDeleted'))
       fetchAccounts()
       setDeleteTarget(null)
-    } catch (err) { toastError(err.response?.data?.error || t('common.error')) }
+    } catch (err) {
+      // 409 = the server-side guard: journal lines still reference this
+      // account, so it can only be deactivated, not deleted.
+      const msg = err.response?.status === 409
+        ? (t('accounting.accountInUse') || 'In use').replace('{count}', err.response.data?.entry_count ?? '?')
+        : (err.response?.data?.error || t('common.error'))
+      toastError(msg)
+      setDeleteTarget(null)
+    }
     finally { setDeleting(false) }
+  }
+
+  const handleToggleActive = async (account) => {
+    try {
+      await accountsApi.update(account.id, { is_active: account.is_active === false })
+      toastSuccess(t('accounting.accountUpdated'))
+      fetchAccounts()
+    } catch (err) {
+      toastError(err.response?.data?.error || t('common.error'))
+    }
   }
 
   const filteredAccounts = accounts.filter(a => {
     if (filterType && a.account_type !== filterType) return false
+    if (filterStatus === 'active' && a.is_active === false) return false
+    if (filterStatus === 'inactive' && a.is_active !== false) return false
     if (search && !a.name.toLowerCase().includes(search.toLowerCase()) && !a.code.includes(search)) return false
     return true
   })
 
+  const sortedAccounts = [...filteredAccounts].sort((a, b) => {
+    if (sortBy === 'name') return a.name.localeCompare(b.name)
+    if (sortBy === 'balance_desc') return (parseFloat(b.balance) || 0) - (parseFloat(a.balance) || 0)
+    if (sortBy === 'balance_asc') return (parseFloat(a.balance) || 0) - (parseFloat(b.balance) || 0)
+    return a.code.localeCompare(b.code)
+  })
+
   const grouped = {}
   for (const type of ['asset', 'liability', 'equity', 'revenue', 'expense']) {
-    grouped[type] = filteredAccounts.filter(a => a.account_type === type)
+    grouped[type] = sortedAccounts.filter(a => a.account_type === type)
   }
+
+  const activeCount = accounts.filter(a => a.is_active !== false).length
+  const inactiveCount = accounts.length - activeCount
+  const withBalanceCount = accounts.filter(a => Math.abs(parseFloat(a.balance) || 0) >= 0.01).length
+  const netBalance = accounts.reduce((s, a) => s + (parseFloat(a.balance) || 0), 0)
 
   return (
     <div className="space-y-6">
@@ -160,12 +205,39 @@ expense:{label: t('accounting.expenseType')||'Expense',color:'bg-warning-soft te
         </div>
       </div>
 
+      {/* Summary cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-surface rounded-2xl shadow-sm border border-border p-4">
+          <p className="text-xs uppercase tracking-wider text-muted">{t('common.total')} {t('accounting.accountsCount')}</p>
+          <p className="text-2xl font-bold">{accounts.length}</p>
+        </div>
+        <div className="bg-surface rounded-2xl shadow-sm border border-border p-4">
+          <p className="text-xs uppercase tracking-wider text-muted">{t('accounting.withBalance')}</p>
+          <p className="text-2xl font-bold">{withBalanceCount}</p>
+        </div>
+        <div className="bg-surface rounded-2xl shadow-sm border border-border p-4">
+          <p className="text-xs uppercase tracking-wider text-muted">{t('common.active')} / {t('common.inactive')}</p>
+          <p className="text-2xl font-bold"><span className="text-success">{activeCount}</span> <span className="text-muted">/</span> <span className="text-danger">{inactiveCount}</span></p>
+        </div>
+        <div className="bg-surface rounded-2xl shadow-sm border border-border p-4">
+          <p className="text-xs uppercase tracking-wider text-muted">{t('accounting.balance')}</p>
+          <p className="text-2xl font-bold font-mono">{netBalance.toFixed(2)} {t('common.currency')}</p>
+        </div>
+      </div>
+
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1">
 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted"/>
 <input type="text"value={search}onChange={(e)=>setSearch(e.target.value)}placeholder={t('common.search')}className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-border bg-surface ring-focus outline-none"/>
         </div>
 <SearchableSelect options={[{value:'',label:t('accounting.allTypes')},...Object.entries(ACCOUNT_TYPES).map(([key,val])=>({value:key,label:val.label}))]}value={filterType}onChange={(v)=>setFilterType(v)}placeholder={t('common.searchSelect')}className="px-4 py-2.5 rounded-xl border border-border bg-surface ring-focus outline-none"/>
+<SearchableSelect options={[{value:'',label:t('common.all')}, {value:'active',label:t('common.active')}, {value:'inactive',label:t('common.inactive')}]}value={filterStatus}onChange={(v)=>setFilterStatus(v)}placeholder={t('common.searchSelect')}className="px-4 py-2.5 rounded-xl border border-border bg-surface ring-focus outline-none"/>
+<SearchableSelect options={[
+          { value: 'code', label: t('accounting.sortCode') },
+          { value: 'name', label: t('accounting.sortName') },
+          { value: 'balance_desc', label: t('accounting.sortBalanceDesc') },
+          { value: 'balance_asc', label: t('accounting.sortBalanceAsc') },
+        ]}value={sortBy}onChange={(v)=>setSortBy(v)}placeholder={t('common.searchSelect')}className="px-4 py-2.5 rounded-xl border border-border bg-surface ring-focus outline-none"/>
       </div>
 
       {showForm && (
@@ -236,7 +308,7 @@ className="flex-1 px-4 py-2.5 bg-success hover:bg-green-700 disabled:opacity-50 
                     <span className={`px-2.5 py-0.5 rounded-lg text-xs font-bold ${ACCOUNT_TYPES[type].color}`}>{ACCOUNT_TYPES[type].label}</span>
                     {items.length} {t('accounting.accountsCount')}
                   </h3>
-<span className="text-sm font-medium text-muted">{items.reduce((s,a)=>s +(a.balance || 0),0).toFixed(2)}EGP</span>
+<span className="text-sm font-medium text-muted">{items.reduce((s,a)=>s +(a.balance || 0),0).toFixed(2)} {t('common.currency')}</span>
                 </div>
                 <div className="overflow-x-auto">
                 <table className="w-full min-w-[450px]">
@@ -252,10 +324,21 @@ className="flex-1 px-4 py-2.5 bg-success hover:bg-green-700 disabled:opacity-50 
                     {items.map(account => (
 <tr key={account.id}className="border-t border-border bg-surface-hover">
                         <td className="px-6 py-3 text-sm font-mono font-bold">{account.code}</td>
-                        <td className="px-6 py-3 text-sm font-medium">{getAccountName(account)}</td>
-                        <td className="px-6 py-3 text-sm font-medium text-end">{(account.balance || 0).toFixed(2)} EGP</td>
+                        <td className="px-6 py-3 text-sm font-medium">
+                          <span className="flex items-center gap-2">
+                            {getAccountName(t, account)}
+                            <span className={`px-2 py-0.5 rounded-lg text-xs font-bold ${account.is_active !== false ? 'bg-success-soft text-success-soft-foreground' : 'bg-surface-tertiary text-muted'}`}>
+                              {account.is_active !== false ? t('common.active') : t('common.inactive')}
+                            </span>
+                          </span>
+                        </td>
+                        <td className="px-6 py-3 text-sm font-medium text-end">{(account.balance || 0).toFixed(2)} {t('common.currency')}</td>
                         <td className="px-6 py-3 text-end">
                           <div className="flex items-center justify-end gap-1">
+<button onClick={()=>setLedgerTarget(account)}title={t('accounting.accountLedger')}className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg bg-surface-hover text-muted hover:text-primary-600"><Eye className="w-4 h-4"/></button>
+<button onClick={()=>handleToggleActive(account)}title={account.is_active !== false ? t('accounting.deactivate') : t('accounting.activate')}className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg bg-surface-hover text-muted hover:text-success">
+                              {account.is_active !== false ? <XCircle className="w-4 h-4"/> : <CheckCircle className="w-4 h-4"/>}
+                            </button>
 <button onClick={()=>handleEdit(account)}className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg bg-surface-hover text-muted hover:text-primary-600"><Edit2 className="w-4 h-4"/></button>
 <button onClick={()=>setDeleteTarget(account.id)}className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg bg-surface-hover text-muted hover:text-red-600"><Trash2 className="w-4 h-4"/></button>
                           </div>
@@ -281,6 +364,107 @@ className="flex-1 px-4 py-2.5 bg-success hover:bg-green-700 disabled:opacity-50 
         cancelText={t('common.cancel') || 'Cancel'}
         loading={deleting}
       />
+      {ledgerTarget && (
+        <AccountDetailDrawer account={ledgerTarget} onClose={() => setLedgerTarget(null)} />
+      )}
+    </div>
+  )
+}
+
+function AccountDetailDrawer({ account, onClose }) {
+  const { t } = useAppStore()
+  const [ledger, setLedger] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let alive = true
+    accountingReportsApi.getAccountLedger(account.id)
+      .then(({ data }) => { if (alive) setLedger(data) })
+      .catch(() => { if (alive) setLedger({ account, transactions: [] }) })
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [account.id, account])
+
+  const typeKey = `accounting.${account.account_type}`
+  const typeLabel = t(typeKey) !== typeKey ? t(typeKey) : account.account_type
+  const transactions = ledger?.transactions || []
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative w-full max-w-3xl bg-surface shadow-2xl overflow-y-auto">
+        <div className="sticky top-0 z-10 bg-surface border-b border-border px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-accent-soft rounded-lg"><Landmark className="w-5 h-5 text-accent" /></div>
+              <div>
+                <h2 className="text-xl font-bold text-foreground">{account.code} — {getAccountName(t, account)}</h2>
+                <p className="text-sm text-muted">{typeLabel} · {(parseFloat(account.balance) || 0).toFixed(2)} {t('common.currency')}</p>
+              </div>
+            </div>
+            <button onClick={onClose} className="p-2.5 rounded-lg bg-surface-hover min-w-[44px] min-h-[44px] flex items-center justify-center"><X className="w-5 h-5" /></button>
+          </div>
+        </div>
+
+        <div className="px-6 py-4 space-y-6">
+          <div className="grid grid-cols-3 gap-3">
+            <div className="bg-surface-secondary rounded-xl p-3">
+              <div className="flex items-center gap-1.5 text-xs text-muted mb-1"><FileText className="w-3.5 h-3.5" />{t('accounting.totalEntries')}</div>
+              <p className="text-lg font-bold">{loading ? '—' : transactions.length}</p>
+            </div>
+            <div className="bg-surface-secondary rounded-xl p-3">
+              <div className="flex items-center gap-1.5 text-xs text-muted mb-1"><Scale className="w-3.5 h-3.5" />{t('accounting.balance')}</div>
+              <p className="text-lg font-bold font-mono">{(parseFloat(account.balance) || 0).toFixed(2)} {t('common.currency')}</p>
+            </div>
+            <div className="bg-surface-secondary rounded-xl p-3">
+              <div className="flex items-center gap-1.5 text-xs text-muted mb-1"><CheckCircle className="w-3.5 h-3.5" />{t('common.status')}</div>
+              <p className="text-lg font-bold">{account.is_active !== false ? t('common.active') : t('common.inactive')}</p>
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold">{t('accounting.transactions')}</h3>
+              <Link to={`/accounting/journals?search=${encodeURIComponent(account.code)}`} className="flex items-center gap-1.5 text-xs font-medium text-accent hover:underline">
+                <FileText className="w-3.5 h-3.5" />
+                {t('accounting.viewInJournals')}
+              </Link>
+            </div>
+            {loading ? (
+              <div className="flex justify-center py-8"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-accent" /></div>
+            ) : transactions.length === 0 ? (
+              <p className="text-sm text-muted py-4">{t('common.noData')}</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[560px]">
+                  <thead>
+                    <tr className="text-xs text-muted border-b border-border">
+                      <th className="text-start px-3 py-2 font-medium">{t('common.date')}</th>
+                      <th className="text-start px-3 py-2 font-medium">{t('accounting.entryNumber')}</th>
+                      <th className="text-start px-3 py-2 font-medium">{t('common.description')}</th>
+                      <th className="text-end px-3 py-2 font-medium">{t('accounting.debit')}</th>
+                      <th className="text-end px-3 py-2 font-medium">{t('accounting.credit')}</th>
+                      <th className="text-end px-3 py-2 font-medium">{t('accounting.balance')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {transactions.map(line => (
+                      <tr key={line.id} className="border-t border-border bg-surface-hover">
+                        <td className="px-3 py-2.5 text-sm">{line.journal_entries?.date}</td>
+                        <td className="px-3 py-2.5 text-sm font-mono">{line.journal_entries?.entry_number}</td>
+                        <td className="px-3 py-2.5 text-sm">{translateDescription(t, line.description || line.journal_entries?.description)}</td>
+                        <td className="px-3 py-2.5 text-sm text-end font-mono">{line.debit > 0 ? parseFloat(line.debit).toFixed(2) : ''}</td>
+                        <td className="px-3 py-2.5 text-sm text-end font-mono">{line.credit > 0 ? parseFloat(line.credit).toFixed(2) : ''}</td>
+                        <td className="px-3 py-2.5 text-sm text-end font-mono font-medium">{(parseFloat(line.balance) || 0).toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
