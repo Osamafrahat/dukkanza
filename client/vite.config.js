@@ -3,6 +3,12 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  // html2pdf.js hard-requires html2canvas, whose 1.x parser throws on Tailwind
+  // v4's oklch() colors, killing every PDF export. Alias to html2canvas-pro,
+  // the API-compatible fork that understands oklch/lab/color().
+  resolve: {
+    alias: [{ find: /^html2canvas$/, replacement: 'html2canvas-pro' }],
+  },
   plugins: [
     react(),
     VitePWA({

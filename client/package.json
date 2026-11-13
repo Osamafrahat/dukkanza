@@ -23,7 +23,7 @@
     "axios": "^1.10.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
-    "html2canvas": "^1.4.1",
+    "html2canvas-pro": "^2.6.4",
     "html2pdf.js": "^0.14.0",
     "html5-qrcode": "^2.3.8",
     "idb": "^8.0.3",

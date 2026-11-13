@@ -5,6 +5,7 @@ import html2pdf from 'html2pdf.js'
 export default function InventoryPrintSheet({ products, categories, settings, user }) {
   const { t } = useAppStore()
   const [generating, setGenerating] = useState(false)
+  const [failed, setFailed] = useState(false)
 
   const totalProducts = products.length
   const totalQuantity = products.reduce((sum, p) => sum + p.stock_quantity, 0)
@@ -17,6 +18,7 @@ export default function InventoryPrintSheet({ products, categories, settings, us
 
   const handleDownloadPDF = () => {
     setGenerating(true)
+    setFailed(false)
     const element = document.getElementById('inventory-print-content')
 
     const opt = {
@@ -30,8 +32,11 @@ export default function InventoryPrintSheet({ products, categories, settings, us
 
     html2pdf().set(opt).from(element).save().then(() => {
       setGenerating(false)
-    }).catch(() => {
+    }).catch((err) => {
+      // Never fail silently: log for debugging and show inline feedback.
+      console.error('PDF generation failed:', err)
       setGenerating(false)
+      setFailed(true)
     })
   }
 
@@ -48,6 +53,9 @@ export default function InventoryPrintSheet({ products, categories, settings, us
           </svg>
           {generating ? (t('print.generating') || 'Generating PDF...') : (t('print.downloadPDF') || 'Download PDF')}
         </button>
+        {failed && (
+          <p className="mt-2 text-sm text-danger">{t('print.pdfFailed') || 'PDF generation failed. Please try again.'}</p>
+        )}
       </div>
 
       <div id="inventory-print-content" dir="auto" style={{ color: '#000', fontFamily: 'Tahoma, Arial, Helvetica, sans-serif', letterSpacing: 0, padding: '0', margin: '0' }}>
